@@ -1,0 +1,82 @@
+# Every push to master becomes a release 0.{commits from root}.{tags on this
+# commit + 1}: the commit is tagged first, then built and gated like
+# release.yml, and both bundles are attached as tar.gz.
+name: Build release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Version and tag
+        id: v
+        run: |
+          commits=$(git rev-list --count HEAD)
+          tags=$(git tag --points-at HEAD | wc -l)
+          version="0.${commits}.$((tags + 1))"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$version" -m "Release $version"
+          git push origin "refs/tags/$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ hashFiles('shadow-cljs.edn') }}
+
+      - run: npm ci
+
+      - name: Test, build, smoke
+        run: make test smoke dist dist-enterprise smoke-enterprise VERSION=${{ steps.v.outputs.version }}
+
+      - name: Package tar.gz
+        working-directory: dist
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          tar -czf "loretile-app-$V.tar.gz" "loretile-app-$V"
+          tar -czf "loretile-app-$V-enterprise.tar.gz" "loretile-app-$V-enterprise"
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          gh release create "$V" --verify-tag --title "Loretile $V" --generate-notes \
+            "dist/loretile-app-$V.tar.gz" "dist/loretile-app-$V-enterprise.tar.gz"
+
+      - name: Drop the tag of a failed build
+        if: failure() && steps.v.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          gh release delete "$V" --yes 2>/dev/null || true
+          git push origin ":refs/tags/$V" || true
