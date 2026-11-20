@@ -50,7 +50,8 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
       return page;
     };
     const log = (p) => p.evaluate(() => loretileLog() || '');
-    const append = (p, edn) => p.evaluate((s) => loretile.store.append_BANG_(cljs.reader.read_string(s)), edn);
+    // the guard's refusal, printed — or null when the event was stored
+    const append = (p, edn) => p.evaluate((s) => { const r = loretile.store.append_BANG_(cljs.reader.read_string(s)); return r ? cljs.core.pr_str(r) : null; }, edn);
     // one whole sync cycle of the open graph, waited for (retried while one is already running)
     const syncNow = async (p) => {
       for (let i = 0; i < 30; i++) {
@@ -87,6 +88,20 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:owner "Борис"}]]}`);
     await syncNow(B); await syncNow(A);
     check(/:owner "Борис"/.test(await log(A)), 'B\'s property reaches A');
+    // phase C: what the other did, as pills
+    const pills = async (p) => { await sleep(400); return p.$$eval('.peer-pill', (ps) => ps.map((x) => x.textContent)).catch(() => []); };
+    check((await pills(A)).some((t) => /1\s*свойство изменено/.test(t)), 'A is shown what B did: «1 свойство изменено»');
+    const refused = await append(B, `{:ev/type :change :ops [[:node-set "n-2" {:title "Второй"}] [:node-set "n-3" {:title "Третий"}] [:edge-set "n-2" :see-also "${nid}" {}]]}`);
+    check(!refused, 'B adds two nodes and a link' + (refused ? ': ' + refused : ''));
+    await syncNow(B); await syncNow(A);
+    const more = await pills(A);
+    check(more.some((t) => /2\s*новых узла/.test(t)) && more.some((t) => /1\s*новая связь/.test(t)), 'and on the next sync «2 новых узла», «1 новая связь»: ' + more.join(' | '));
+    await A.screenshot({ path: path.join(__dirname, 'shot-sync-pills.png') });
+    await A.setViewport({ width: 390, height: 800 }); await sleep(200);
+    await A.screenshot({ path: path.join(__dirname, 'shot-sync-pills-phone.png') });
+    await A.setViewport({ width: 1280, height: 900 });
+    await sleep(8500);
+    check((await pills(A)).length === 0, 'the pills fade after 8 s');
 
     // the same property set two ways: a conflict card for the one who syncs second
     await append(A, `{:ev/type :change :ops [[:node-set "${nid}" {:stage "черновик"}]]}`);
@@ -96,6 +111,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     const card = await B.$eval('.card-conflict', (e) => e.textContent).catch(() => '');
     check(/stage/.test(card) && /черновик/.test(card) && /готово/.test(card), 'B gets a conflict card: theirs «черновик», mine «готово»');
     check(await B.$('.nav-chat .conflict-badge') !== null, 'and a badge on the assistant');
+    check(await B.$('.peer-pill.hot.conflicts') !== null, 'and a red pill: a conflict waits');
     await B.screenshot({ path: path.join(__dirname, 'shot-sync-conflict.png') });
     check(!/:stage "готово"/.test(await onServer(gid)), 'B\'s clashing value was held back, not sent');
     await B.click('.card-conflict .conflict-mine'); await sleep(500); await syncNow(B);
@@ -113,7 +129,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await B.click('.card-conflict .conflict-mine'); await sleep(500); await syncNow(B);
     await syncNow(A);
     await A.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(800);
-    check(await A.evaluate(() => document.querySelectorAll('.node').length) === 1 && /:priority "высокий"/.test(await log(A)),
+    check(await A.evaluate(() => document.querySelectorAll('.node').length) === 3 && /:priority "высокий"/.test(await log(A)),
       '«вернуть и оставить моё» brings it back for both, with B\'s edit');
   } finally {
     await browser.close();

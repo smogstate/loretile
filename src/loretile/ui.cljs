@@ -112,6 +112,24 @@
 ;; visitor across both pages; absent = follow the system
 (def ^:private theme-key "loretile-theme")
 (defonce theme (r/atom (.getItem js/localStorage theme-key)))
+
+(def ^:private pill-icons {:conflicts :question :nodes :plus :links :link :props :pencil :removed :trash})
+
+(defn- peer-pills
+  "What others did on the last sync (wiki/Graph-Sync.md phase C, vintry's
+   peer toasts): equal pills bottom-right, a round icon, a bold count, a
+   label; red for what needs a person; gone after 8 s."
+  []
+  (when-let [{:keys [key items]} @sync/activity]
+    ^{:key key}
+    [:div.peer-pills
+     (for [{:keys [kind n hot?]} items]
+       ^{:key kind}
+       [:div.peer-pill {:class [(name kind) (when hot? "hot")]}
+        [:span.peer-pill-ico [icons/icon (pill-icons kind)]]
+        [:span.peer-pill-n n]
+        [:span.peer-pill-label (t (i18n/plural n (mapv #(keyword "ui" (str "peer-" (name kind) "-" %)) ["1" "2" "5"])))]])]))
+
 (defn apply-theme! []
   (if-let [t @theme]
     (set! (.. js/document -documentElement -dataset -theme) t)
@@ -3279,4 +3297,5 @@
          :catalog [:div.split.catalog-split {:class "win-normal"} [catalog kg] [guide/view]]
          :learn [learn/view (:id @route)]
          [map-view kg]))
-     (when @snack [:div.snack @snack])]))
+     (when @snack [:div.snack @snack])
+     [peer-pills]]))

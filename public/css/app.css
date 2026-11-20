@@ -781,3 +781,20 @@ select.node-type { margin-bottom: 8px; }
 .card-conflict .conflict-row p { margin: 2px 0; }
 .card-conflict .conflict-val { font-weight: 600; }
 .server-graphs { margin-top: 18px; }
+
+/* what others did on the last sync (wiki/Graph-Sync.md phase C, vintry's
+   peer toasts): equal pills bottom-right, above the snack */
+.peer-pills { position: fixed; right: 72px; bottom: 64px; z-index: 185;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; }
+.peer-pill { width: 210px; display: flex; align-items: center; gap: 9px; border-radius: 12px;
+  background: color-mix(in srgb, var(--card) 90%, transparent); color: var(--fg);
+  border: 1px solid var(--line); padding: 6px 13px 6px 6px; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+  font-size: 13.5px; animation: peer-in .22s ease-out both; }
+.peer-pill-ico { flex: none; width: 30px; height: 30px; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; background: var(--accent); color: var(--card); }
+.peer-pill.hot .peer-pill-ico { background: var(--danger, #d03b3b); color: #fff; }
+.peer-pill-ico svg { width: 16px; height: 16px; stroke-width: 2.2; }
+.peer-pill-n { font-weight: 800; }
+.peer-pill-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes peer-in { from { opacity: 0; transform: translateX(12px); } }
+@media (max-width: 600px) { .peer-pills { right: 64px; bottom: 72px; } .peer-pill { width: 190px; } }

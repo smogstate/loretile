@@ -29,6 +29,20 @@
 (defonce conflicts (r/atom (read-ls conflicts-key {})))
 (defonce status (r/atom {}))   ; gid -> :syncing | :ok | :offline — a view, never saved
 (defonce ^:private busy (atom #{}))
+;; what OTHERS did, from the last sync that brought anything (phase C):
+;; {:key :items [{:kind :n :hot?}]} — vintry's peer pills, gone after 8 s
+(defonce activity (r/atom nil))
+
+(defn- show-activity!
+  "Others' events `remote` arrived on graph `kg` (as it stood before them);
+   `waiting` new conflicts came with them."
+  [kg remote waiting]
+  (let [items (cond->> (m/summary kg remote)
+                (pos? waiting) (cons {:kind :conflicts :n waiting :hot? true}))
+        k (random-uuid)]
+    (when (seq items)
+      (reset! activity {:key k :items (vec (take 5 items))})
+      (js/setTimeout #(when (= k (:key @activity)) (reset! activity nil)) 8000))))
 
 (defn- save! []
   (store/write! state-key (pr-str @sync-state))
@@ -103,6 +117,7 @@
                                                                (:gone c))))))
                         (:conflicts r))]
         (store/replace-log! gid (into theirs keep))
+        (when (= gid @store/current) (show-activity! before remote (count found)))
         (swap! sync-state assoc gid {:seq new-seq :pending (mapv :ev/id keep)})
         (when (seq found) (swap! conflicts update gid (fnil into []) found))))
     (save!)
@@ -136,7 +151,9 @@
                                    sent (set (map :ev/id mine))
                                    confirmed (vec (remove #(sent (:ev/id %)) log))
                                    over (m/overridden others mine)]
-                               (when (seq others) (store/replace-log! gid (-> confirmed (into others) (into mine))))
+                               (when (seq others)
+                                 (store/replace-log! gid (-> confirmed (into others) (into mine)))
+                                 (when (= gid @store/current) (show-activity! (fold/kg confirmed) others (count over))))
                                (when (seq over)
                                  (swap! conflicts update gid (fnil into [])
                                         (mapv #(assoc % :id (str (random-uuid)) :at (js/Date.now)) over)))

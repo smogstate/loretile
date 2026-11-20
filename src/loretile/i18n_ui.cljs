@@ -94,6 +94,21 @@
    :ui/server-graphs-none {:ru "Все графы сервера уже на этом устройстве." :de "Alle Graphen des Servers sind schon auf diesem Gerät." :en "Every graph on the server is already on this device."}
    :ui/server-graph-meta {:ru "событий: {n}" :de "Ereignisse: {n}" :en "events: {n}"}
    :ui/open {:ru "Открыть" :de "Öffnen" :en "Open"}
+   :ui/peer-conflicts-1 {:ru "конфликт" :de "Konflikt" :en "conflict"}
+   :ui/peer-conflicts-2 {:ru "конфликта" :de "Konflikte" :en "conflicts"}
+   :ui/peer-conflicts-5 {:ru "конфликтов" :de "Konflikte" :en "conflicts"}
+   :ui/peer-nodes-1 {:ru "новый узел" :de "neuer Knoten" :en "new node"}
+   :ui/peer-nodes-2 {:ru "новых узла" :de "neue Knoten" :en "new nodes"}
+   :ui/peer-nodes-5 {:ru "новых узлов" :de "neue Knoten" :en "new nodes"}
+   :ui/peer-links-1 {:ru "новая связь" :de "neue Verbindung" :en "new link"}
+   :ui/peer-links-2 {:ru "новые связи" :de "neue Verbindungen" :en "new links"}
+   :ui/peer-links-5 {:ru "новых связей" :de "neue Verbindungen" :en "new links"}
+   :ui/peer-props-1 {:ru "свойство изменено" :de "Eigenschaft geändert" :en "property changed"}
+   :ui/peer-props-2 {:ru "свойства изменены" :de "Eigenschaften geändert" :en "properties changed"}
+   :ui/peer-props-5 {:ru "свойств изменено" :de "Eigenschaften geändert" :en "properties changed"}
+   :ui/peer-removed-1 {:ru "удаление" :de "Entfernung" :en "removal"}
+   :ui/peer-removed-2 {:ru "удаления" :de "Entfernungen" :en "removals"}
+   :ui/peer-removed-5 {:ru "удалений" :de "Entfernungen" :en "removals"}
    :ui/conflict-arrived {:ru "Нужно ваше решение: изменения разошлись — см. ассистента" :de "Ihre Entscheidung ist nötig: Änderungen kollidieren — siehe Assistent" :en "Your decision is needed: changes collided — see the assistant"}
    :ui/prop-icon {:ru "значок" :de "Symbol" :en "icon"}
    :ui/icon-none {:ru "без значка" :de "ohne Symbol" :en "no icon"}
