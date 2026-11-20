@@ -24,6 +24,7 @@
 ;; --- routing ---------------------------------------------------------------
 
 (declare fly-to!)   ; the route watcher brings an opened topic into view
+(declare prop-filter prop-keys undo-asked! redo-asked!)   ; the map's property filter (with the rail, below)
 (defonce route (r/atom {:view :map}))
 
 (defn goto! [hash] (set! js/location.hash hash))
@@ -128,9 +129,14 @@
     (apply-theme!)))
 (defonce snack (r/atom nil))
 
+(defonce ^:private snack-n (atom 0))
+
 (defn snack! [text]
-  (reset! snack text)
-  (js/setTimeout #(when (= @snack text) (reset! snack nil)) 2500))
+  ;; each message owns its timer: the same text twice in a row was hidden
+  ;; early by the FIRST one's timer (undo-check, 2026-11-20)
+  (let [n (swap! snack-n inc)]
+    (reset! snack text)
+    (js/setTimeout #(when (= @snack-n n) (reset! snack nil)) 2500)))
 
 ;; --- physics (kintale graph.cljs pattern: d3-force driven by us) -------------
 
@@ -637,11 +643,15 @@
         empty? (and learnable? (= :accepted status) (zero? n-lo) (zero? n-it))
         selected? (or (= id @graph-sel) (= id (:id @route)))
         linking? (= id (:from @link-mode))
-        focus-class (when focus
-                      (cond ((:ids focus #{}) id) ""
-                            ((:targets focus #{}) id) " in-target"
-                            ((:closure focus #{}) id) " in-closure"
-                            :else " dim"))]
+        focus-class (str (when focus
+                           (cond ((:ids focus #{}) id) ""
+                                 ((:targets focus #{}) id) " in-target"
+                                 ((:closure focus #{}) id) " in-closure"
+                                 :else " dim"))
+                         ;; the property filter (a map tool) dims the rest
+                         (when-let [{fk :k fv :v} @prop-filter]
+                           (when (and fk (not= (str (get c fk)) fv)) " dim filtered-out")))
+        map-prop (get-in kg [:graph :map-prop])]
     (when p
       [:g {:class (str "node " (status-class status) (when empty? " node-empty") focus-class
                        (when selected? " selected")
@@ -738,6 +748,9 @@
        [:text.node-label {:y (+ R 16)}
         ;; the selected one is drawn whole in the top layer (map-view)
         (when-not selected? (let [t (:title c)] (if (> (count t) 20) (str (subs t 0 19) "…") t)))]
+       ;; the graph's chosen property, under the title (2026-11-20)
+       (when-let [v (and map-prop (get c map-prop))]
+         [:text.node-prop {:y (+ R (if learnable? 44 30))} (let [v (str v)] (if (> (count v) 22) (str (subs v 0 21) "…") v))])
        (when learnable?
          [:text.node-sub {:y (+ R 30)}
           (str (t :ui/node-sub-counts {"{n}" n-lo "{m}" n-it})
@@ -761,7 +774,7 @@
        [:text.node-label {:y (+ R 16) :opacity 0.75} (:title prop)]
        [:text.node-sub {:y (+ R 30)} (t :ui/ghost-hint)]])))
 
-(declare rail fullscreen-btn legend-btn layout-btn demos demos-on? pick-demo! merge-badge asof-btn color-scheme node-words edge-label edge-open)
+(declare rail fullscreen-btn legend-btn layout-btn demos demos-on? pick-demo! merge-badge asof-btn color-scheme node-words edge-label edge-open filter-btn prop-filter)
 
 (defn- mount-map!
   "Size the sim to the svg, seed the viewport once, bind the wheel once.
@@ -791,7 +804,7 @@
       ;; the map's colour scheme is a graph property (Denis 2026-11-19); a
       ;; graph describing types defaults to the blueprint look
       [:div.map-wrap {:class (str "scheme-" (color-scheme kg))}
-       [:div.map-tools [legend-btn] [layout-btn] [fullscreen-btn] [asof-btn] [merge-badge]]
+       [:div.map-tools [legend-btn] [layout-btn] [fullscreen-btn] [asof-btn] [filter-btn] [merge-badge]]
        ;; the past is for looking at: no tools that write
        (when (nil? @store/as-of) [rail])
        (if (and (empty? (:concepts kg)) (empty? (:proposals kg)))
@@ -2109,6 +2122,8 @@
     {:label (t :ui/new-link) :icon :link :run #(reset! link-mode {:from nil})}
     {:label (t :ui/new-course) :icon :plus :run #(goto! "#/course/new")}
     {:label (t :ui/new-graph) :icon :graph :run #(new-graph-asked!)}
+    {:label (t :ui/undo) :icon :back :hint "Ctrl+Z" :run #(undo-asked!)}
+    {:label (t :ui/redo) :icon :back :hint "Ctrl+Shift+Z" :run #(redo-asked!)}
     {:label (t :ui/new-ontology) :icon :lineage :run new-ontology-asked!}
     {:label (t :ui/export-log) :icon :open-ext :run store/export-edn!}
     ;; blobs never go to git: copy them to a folder of the curator's choosing
@@ -2145,14 +2160,22 @@
                 (snack! (t :ui/model-label {"{label}" (:label v)})))})
    (for [[id c] (:concepts kg)]
      {:label (:title c) :icon :notes :hint (t :ui/topic-lower)
+      ;; a node is found by its properties too (2026-11-20)
+      :props (vec (for [[k v] (fold/node-props c)] (str (name k) ": " v)))
       :run #(goto! (str "#/c/" id))})))
 
 (defn palette [kg]
   (let [q (r/atom "") sel (r/atom 0)]
     (fn [_]
-      (let [acts (vec (filter #(str/includes? (str/lower-case (:label %))
-                                              (str/lower-case @q))
-                              (palette-actions kg)))
+      (let [lq (str/lower-case @q)
+            ;; a title match, else a property «key: value» that holds the query —
+            ;; shown as the row's hint, so the person sees why it matched
+            acts (vec (keep (fn [a]
+                              (cond
+                                (str/includes? (str/lower-case (:label a)) lq) a
+                                (seq lq) (when-let [m (first (filter #(str/includes? (str/lower-case %) lq) (:props a)))]
+                                           (assoc a :hint m))))
+                            (palette-actions kg)))
             run! (fn [a] (reset! palette-open false) ((:run a)))]
         [:div.cmd-scrim {:on-click #(reset! palette-open false)}
          [:div.cmd-palette {:on-click #(.stopPropagation %)}
@@ -2680,17 +2703,69 @@
           [style-controls (graph-type-style kg (:id nt)) (get styles (:id nt)) #(put! (:id nt) %)]])])))
 
 (defn- graph-props-section
-  "The open graph's own properties: its map's colour scheme and its style
-   per type — `graph-set` ops."
+  "The open graph's own properties: its map's colour scheme, the property
+   shown under node titles, and its style per type — `graph-set` ops."
   [kg]
   [:section.graph-props
    [:h3 (t :ui/graph-props)]
+   (when-let [ks (seq (prop-keys kg))]
+     [:label (t :ui/map-prop) " "
+      [:select.map-prop {:value (some-> (get-in kg [:graph :map-prop]) name)
+                         :on-change #(store/append! {:ev/type :change
+                                                     :ops [[:graph-set {:map-prop (let [v (.. % -target -value)] (when (seq v) (keyword v)))}]]})}
+       [:option {:value ""} (t :ui/map-prop-none)]
+       (for [k ks] ^{:key k} [:option {:value (name k)} (name k)])]])
    [type-style-rows kg]
    [:label (t :ui/color-scheme) " "
     [:select.color-scheme {:value (color-scheme kg)
                            :on-change #(store/append! {:ev/type :change
                                                        :ops [[:graph-set {:color-scheme (.. % -target -value)}]]})}
      (for [c color-schemes] ^{:key c} [:option {:value c} (t (keyword "ui" (str "scheme-" c)))])]]])
+
+(defn- migration-section
+  "The open graph is held on an old ontology version (it would lose types
+   or relations its data uses): choose what each dropped one becomes, then
+   take the new version — retyping and the new copy in one change
+   (2026-11-20; the graph used to stay stuck)."
+  []
+  (let [plan (r/atom {:types {} :relations {}})]
+    (fn []
+      (when-let [{:keys [breaks latest]} (store/stuck)]
+        (let [k (store/kg)
+              old (fold/profile k)
+              n-kind (frequencies (keep :kind (vals (:concepts k))))
+              n-rel (frequencies (map :type (:edges k)))
+              types (:node-types latest)
+              rels (remove #(= :grounded-in (:id %)) (:relations latest))
+              chosen-type #(get-in @plan [:types %] (:id (first types)))
+              chosen-rel #(get-in @plan [:relations %] :remove)]
+          [:section.migration
+           [:h3 (t :ui/migration-heading)]
+           [:p.muted (t :ui/migration-lead {"{onto}" (store/graph-title (get-in k [:ontology :graph]))})]
+           (for [kind (:node-types breaks)]
+             ^{:key (str "t" kind)}
+             [:div.migration-row
+              [:span (t :ui/migration-type {"{type}" (profile/kind-label old kind) "{n}" (get n-kind kind 0)})]
+              [:select.migrate-type {:value (name (chosen-type kind))
+                                     :on-change #(swap! plan assoc-in [:types kind] (keyword (.. % -target -value)))}
+               (for [nt types] ^{:key (:id nt)} [:option {:value (name (:id nt))} (:label nt)])]])
+           (for [rel (:relations breaks)]
+             ^{:key (str "r" rel)}
+             [:div.migration-row
+              [:span (t :ui/migration-relation {"{rel}" (profile/label old rel) "{n}" (get n-rel rel 0)})]
+              [:select.migrate-relation {:value (if (= :remove (chosen-rel rel)) "" (name (chosen-rel rel)))
+                                         :on-change #(swap! plan assoc-in [:relations rel]
+                                                            (let [v (.. % -target -value)] (if (seq v) (keyword v) :remove)))}
+               [:option {:value ""} (t :ui/migration-remove-links)]
+               (for [r rels] ^{:key (:id r)} [:option {:value (name (:id r))} (:label r)])]])
+           [:button.primary.migrate-go
+            {:on-click (fn []
+                         (let [p {:types (into {} (for [kind (:node-types breaks)] [kind (chosen-type kind)]))
+                                  :relations (into {} (for [rel (:relations breaks)] [rel (chosen-rel rel)]))}]
+                           (if-let [err (store/migrate! p)]
+                             (reset! store/last-error err)
+                             (snack! (t :ui/migration-done)))))}
+            (t :ui/migration-go)]])))))
 
 (defn- ontology-users-section
   "An ontology graph's own page: the graphs on this device that use it, and
@@ -2743,6 +2818,7 @@
         [:a {:href (str "#/g/" (js/encodeURIComponent bound) "/ontology")} (store/graph-title bound)]
         (when-let [{:keys [error detail]} (get @store/sync-refused @store/current)]
           [:span.sync-refused " " (t :ui/sync-refused {"{detail}" (if (= :ontology-breaks-data error) (pr-str detail) (name error))})])])
+     (when bound [migration-section])
      (when onto? [:p.edit-on-map (t :ui/ontology-edit-on-map)])
      (when onto? [ontology-users-section])
      [graph-props-section kg]
@@ -2923,6 +2999,41 @@
            [icons/icon (if (dark?) :sun :moon)]]]
          [:span.muted.dmeta "© 2026 Loretile · v " (app-version)]]]])))
 
+;; the map's property filter: {:k key :v value} or nil — a view, never saved
+(defonce prop-filter (r/atom nil))
+
+(defn- prop-keys
+  "Every free property key the graph's nodes carry, sorted."
+  [kg]
+  (sort-by name (distinct (mapcat (comp (partial map key) fold/node-props) (vals (:concepts kg))))))
+
+(defn- filter-btn
+  "Dim every node whose property is not the chosen value (2026-11-20).
+   Present only when some node has a property."
+  []
+  (r/with-let [open (r/atom false)]
+    (let [kg (store/kg) ks (prop-keys kg)
+          {fk :k fv :v} @prop-filter]
+      (when (seq ks)
+        [:div.filter-wrap
+         [:button.rbtn.nav-filter {:title (t :ui/prop-filter) :aria-label (t :ui/prop-filter)
+                                   :class (when (or @open fk) "on") :on-click #(swap! open not)}
+          [icons/icon :filter]]
+         (when @open
+           (let [k (or fk (first ks))
+                 vals* (sort (distinct (keep #(some-> (get % k) str) (vals (:concepts kg)))))]
+             [:div.filter-card
+              [:select.filter-key {:value (name k)
+                                   :on-change #(reset! prop-filter {:k (keyword (.. % -target -value)) :v nil})}
+               (for [x ks] ^{:key x} [:option {:value (name x)} (name x)])]
+              [:select.filter-value {:value (or fv "")
+                                     :on-change #(let [v (.. % -target -value)]
+                                                   (reset! prop-filter (when (seq v) {:k k :v v})))}
+               [:option {:value ""} (t :ui/prop-filter-any)]
+               (for [v vals*] ^{:key v} [:option {:value v} v])]
+              (when fk
+                [:button.filter-clear {:on-click #(reset! prop-filter nil)} (t :ui/prop-filter-clear)])]))]))))
+
 (defn rail []
   ;; on an empty graph only the two doors that CAN do something are shown
   ;; (kintale's rule: absence, never a disabled button). Exploration must
@@ -2953,6 +3064,12 @@
                         :class (when (= :chat (:view @route)) "on")}
       [icons/icon :chat]]]))
 
+(defn- undo-asked! []
+  (if (store/undo!) (snack! (t :ui/undone)) (snack! (t :ui/nothing-to-undo))))
+
+(defn- redo-asked! []
+  (if (store/redo!) (snack! (t :ui/redone)) (snack! (t :ui/nothing-to-redo))))
+
 (defn global-keys! []
   (js/window.addEventListener
    "keydown"
@@ -2961,6 +3078,14 @@
        ;; the key's PLACE, not its letter: «л» on a Russian layout, «K» with Caps Lock
        (and (or (.-ctrlKey e) (.-metaKey e)) (= "KeyK" (.-code e)))
        (do (.preventDefault e) (swap! palette-open not))
+
+       ;; undo / redo of the graph's edits — outside text fields, where the
+       ;; browser's own text undo belongs (2026-11-20)
+       (and (or (.-ctrlKey e) (.-metaKey e))
+            (#{"KeyZ" "KeyY"} (.-code e))
+            (not (#{"INPUT" "TEXTAREA" "SELECT"} (.. e -target -tagName))))
+       (do (.preventDefault e)
+           (if (or (= "KeyY" (.-code e)) (.-shiftKey e)) (redo-asked!) (undo-asked!)))
 
        (= "Escape" (.-key e))
        (do (reset! palette-open false) (reset! show-new-concept false)

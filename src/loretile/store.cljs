@@ -281,6 +281,12 @@
     (when (and (seq name) (not= name (get-in (kg) [:authors id])))
       (append! {:ev/type :author-named :author {:id id :name name}}))))
 
+;; undo / redo (2026-11-20): this session's own edits, per graph, newest
+;; last. An undo is a NEW change (fold/undo-ops) — the log stays append-only.
+(defonce ^:private undo-stack (atom {}))   ; graph id -> [ev-id …]
+(defonce ^:private redo-stack (atom {}))   ; graph id -> [ev-id of an undo …]
+(defonce ^:private replaying? (atom false))
+
 (defn append!
   "Guard at the door, then append + persist. Returns nil on success,
    the guard error otherwise (the UI shows it)."
@@ -304,6 +310,11 @@
           ;; «saved» for work that was gone on reload (review 2026-10-16 A1)
           (if (persist!)
             (do (reset! last-error nil)
+                ;; an edit undo can reverse goes on this graph's stack; a fresh
+                ;; edit forgets what was undone (redo only follows undo)
+                (when (and (not @replaying?) (fold/undoable? e))
+                  (swap! undo-stack update @current (fnil conj []) (:ev/id e))
+                  (swap! redo-stack dissoc @current))
                 ;; an ontology graph's change flows into the graphs bound to it
                 (when (:ontology-graph? (kg)) (sync-bound! @current))
                 nil)
@@ -346,6 +357,48 @@
       (stamp nil {:ev/type :change
                   :ops [[:graph-set {:ontology oid :ontology-version (:ev/id (peek evs)) :ontology-copy p
                                      :ontology-cqs cqs}]]}))))
+
+(defn ontology-latest
+  "The ontology graph `oid` as a copy would carry it now: the vocabulary, or
+   nil when it is not whole."
+  [oid]
+  (some-> (copy-event oid) :ops first second :ontology-copy))
+
+(defn stuck
+  "Is the open graph held on an old version of its ontology — because the
+   newest would drop types or relations its data uses? {:breaks :latest}
+   or nil. Computed live, so it survives a reload (the refusal note does not)."
+  []
+  (let [k (kg)]
+    (when-let [oid (get-in k [:ontology :graph])]
+      (when-let [latest (some-> (ontology-latest oid) profile/normalize)]
+        (when-let [b (fold/sync-breaks k latest)] {:breaks b :latest latest})))))
+
+(defn migrate!
+  "Unstick the open graph (2026-11-20): it refused its ontology's newest
+   version because the version drops types or relations its data uses.
+   `plan` = {:types {old new} :relations {old new-or-:remove}}. ONE change:
+   the new copy, the nodes of each dropped type retyped, the links of each
+   dropped relation retyped (their own properties kept) or removed — the
+   guard judges it whole. nil on success, else the guard error."
+  [plan]
+  (let [k (kg)
+        oid (get-in k [:ontology :graph])
+        e (copy-event oid)
+        retype (for [[id c] (:concepts k) :let [n (get-in plan [:types (:kind c)])] :when n]
+                 [:node-set id {:kind n}])
+        relink (mapcat (fn [{:keys [from to type] :as edge}]
+                         (when-let [n (get-in plan [:relations type])]
+                           (cond-> [[:edge-remove from type to]]
+                             (not= :remove n)
+                             (conj [:edge-set from n to (into (select-keys edge [:justification :inferred?])
+                                                              (fold/edge-props edge))]))))
+                       (:edges k))]
+    (if-not e
+      {:error :no-whole-ontology}
+      (let [err (append! {:ev/type :change :ops (vec (concat (:ops e) retype relink))})]
+        (when (nil? err) (swap! sync-refused dissoc @current))
+        err))))
 
 (defn whole-ontology?
   "Can a data graph take the ontology graph `oid` as it stands (a type, the
@@ -454,6 +507,39 @@
     (.click a)))
 
 (defn- kg-of [id] (if (= id @current) (kg) (fold/kg (graph-events id))))
+
+(defn- reverse-of!
+  "Append the change that reverses the event `id` of the open graph; the id
+   of that new change, or nil (nothing to reverse, or the guard said no)."
+  [id]
+  (let [evs @events
+        i (first (keep-indexed #(when (= id (:ev/id %2)) %1) evs))]
+    (when i
+      (when-let [ops (fold/undo-ops (fold/kg (subvec evs 0 i)) (nth evs i))]
+        (reset! replaying? true)
+        (let [err (try (append! {:ev/type :change :ops ops}) (finally (reset! replaying? false)))]
+          (when (nil? err) (:ev/id (peek @events))))))))
+
+(defn can-undo? [] (seq (get @undo-stack @current)))
+(defn can-redo? [] (seq (get @redo-stack @current)))
+
+(defn undo!
+  "Reverse this session's last edit of the open graph. true when done."
+  []
+  (when-let [id (peek (get @undo-stack @current))]
+    (when-let [uid (reverse-of! id)]
+      (swap! undo-stack update @current pop)
+      (swap! redo-stack update @current (fnil conj []) uid)
+      true)))
+
+(defn redo!
+  "Reverse the last undo. true when done."
+  []
+  (when-let [uid (peek (get @redo-stack @current))]
+    (when-let [rid (reverse-of! uid)]
+      (swap! redo-stack update @current pop)
+      (swap! undo-stack update @current (fnil conj []) rid)
+      true)))
 
 (defn export-edn!
   "Download a graph's log as log.edn (the open one by default) — the author

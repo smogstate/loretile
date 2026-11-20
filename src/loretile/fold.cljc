@@ -185,14 +185,16 @@
    every graph; conformance to the ontology in a data graph only — an
    ontology graph's edges ARE its relations (no usage checks there, Denis
    2026-11-19)."
-  [kg [op a b c d]]
-  (let [onto? (:ontology-graph? kg)
+  [kg [op a b c d] & [migration?]]
+  (let [;; a MIGRATION (a change carrying a new ontology copy) is judged whole,
+        ;; at its end — op by op only structure counts
+        onto? (or (:ontology-graph? kg) migration?)
         p (:profile kg)
         custom? (and p (not (profile/learning? p)))]
     (case op
       :graph-set
       (let [g (merge-props (:graph kg) a)]
-        (when (and (contains? a :ontology-copy) (:ontology-copy g))
+        (when (and (not migration?) (contains? a :ontology-copy) (:ontology-copy g))
           (let [v (profile/normalize (:ontology-copy g))]
             (cond (profile/problems v) {:error :bad-profile :detail (profile/problems v)}
                   (sync-breaks kg v) {:error :ontology-breaks-data :detail (sync-breaks kg v)}))))
@@ -214,6 +216,65 @@
       :edge-remove
       (when (not-any? (same-edge? [a b c]) (:edges kg)) {:error :missing :detail [a c b]}))))
 
+;; --- undo (2026-11-20): an edit is never erased, it is reversed ---------------
+;; The log is append-only, so an undo is a NEW `change` whose ops put back
+;; what an event changed, computed from the graph as it stood BEFORE it.
+;; Covers the property-graph ops and the editor's own events; learning
+;; material (objects, items, courses) waits for the learning migration.
+
+(defn- restore-node-ops
+  "Ops that bring node `id` back as it stood in `kg`, with its links (a
+   link to a SOURCE is not a node edge and is not restored)."
+  [kg id]
+  (when-let [c (get-in kg [:concepts id])]
+    (into [[:node-set id (apply dissoc c managed)]]
+          (for [e (:edges kg)
+                :when (and (or (= id (:from e)) (= id (:to e))) (not= :grounded-in (:type e))
+                           (get-in kg [:concepts (if (= id (:from e)) (:to e) (:from e))]))]
+            [:edge-set (:from e) (:type e) (:to e) (dissoc e :from :to :type :changed-by :changed-at)]))))
+
+(defn- inverse-op
+  "The ops that undo one op, read off the graph just before it."
+  [kg [op a b c d]]
+  (case op
+    :graph-set [[:graph-set (into {} (for [k (keys a)] [k (get-in kg [:graph k])]))]]
+    :node-set (if-let [n (get-in kg [:concepts a])]
+                [[:node-set a (into {} (for [k (keys (apply dissoc b managed))] [k (get n k)]))]]
+                [[:node-remove a]])
+    :node-remove (restore-node-ops kg a)
+    :edge-set (if-let [old (first (filter (same-edge? [a b c]) (:edges kg)))]
+                [[:edge-set a b c (into {} (for [k (keys (dissoc d :from :to :type))] [k (get old k)]))]]
+                [[:edge-remove a b c]])
+    :edge-remove (when-let [old (first (filter (same-edge? [a b c]) (:edges kg)))]
+                   [[:edge-set a b c (dissoc old :from :to :type :changed-by :changed-at)]])))
+
+(defn undoable?
+  "Is `e` an edit undo covers? Cheap — read off its type, no fold."
+  [e]
+  (or (#{:change :concept-accepted :concept-discarded :edge-accepted :edge-discarded} (:ev/type e))
+      (and (= :version-created (:ev/type e)) (= :concept (:entity e)))))
+
+(defn undo-ops
+  "The ops of a `change` that reverses event `e`, given the graph as it
+   stood before `e`; nil when `e` is not an edit undo covers."
+  [kg-before e]
+  (let [edge-ops (fn [{:keys [from to type]}] [from type to])]
+    (case (:ev/type e)
+      :change (loop [k kg-before [o & more] (:ops e) inv ()]
+                (if o
+                  (recur (apply-op k o e) more (concat (inverse-op k o) inv))
+                  (not-empty (vec inv))))
+      :concept-accepted [[:node-remove (get-in e [:concept :id])]]
+      :concept-discarded (restore-node-ops kg-before (:id e))
+      :edge-accepted [(into [:edge-remove] (edge-ops (:edge e)))]
+      :edge-discarded (let [[f t to] (edge-ops (:edge e))]
+                        (when-let [old (first (filter (same-edge? [f t to]) (:edges kg-before)))]
+                          [[:edge-set f t to (dissoc old :from :to :type :changed-by :changed-at)]]))
+      :version-created (when (= :concept (:entity e))
+                         (when-let [n (get-in kg-before [:concepts (:id e)])]
+                           [[:node-set (:id e) (into {} (for [k (keys (apply dissoc (:payload e) managed))] [k (get n k)]))]]))
+      nil)))
+
 (declare vocabulary)
 
 (defn- change-problem
@@ -221,12 +282,28 @@
    the result would leave unsound (a reserved id, a second ordering
    relation): the copy into the graphs that use it could never be taken."
   [kg ops]
-  (loop [k kg [o & more] ops]
-    (if o
-      (or (op-problem k o) (recur (apply-op k o {}) more))
-      (when (:ontology-graph? k)
-        (when-let [why (profile/draft-problems (vocabulary k))]
-          {:error :bad-profile :detail why})))))
+  (let [migration? (and (not (:ontology-graph? kg))
+                        (some (fn [[op a]] (and (= :graph-set op) (contains? a :ontology-copy) (:ontology-copy a))) ops))]
+    (loop [k kg [o & more] ops]
+      (if o
+        (or (op-problem k o migration?) (recur (apply-op k o {}) more))
+        (cond
+          (:ontology-graph? k)
+          (when-let [why (profile/draft-problems (vocabulary k))]
+            {:error :bad-profile :detail why})
+          ;; a migration (2026-11-20): the new copy and the retyped data,
+          ;; judged together — whole, nothing left without meaning, every
+          ;; edge fitting its relation
+          migration?
+          (let [p (:profile k)
+                kind-of #(get-in k [:concepts % :kind])]
+            (cond
+              (profile/problems p) {:error :bad-profile :detail (profile/problems p)}
+              (sync-breaks k p) {:error :ontology-breaks-data :detail (sync-breaks k p)}
+              :else (when-let [e (first (filter #(and (not= :grounded-in (:type %))
+                                                      (not (profile/fits? p (:type %) (kind-of (:from %)) (kind-of (:to %)))))
+                                                (:edges k)))]
+                      {:error :relation-misfit :detail [(:from e) (:to e) (:type e)]}))))))))
 
 (defn guard
   "nil when event may be appended, else {:error ...}."

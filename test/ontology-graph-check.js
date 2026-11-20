@@ -225,6 +225,46 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await page.click('.prop-row .prop-x'); await sleep(400);
   check(await page.$('.prop-row') === null && /:ответственный nil/.test(await log()), 'and × removes it');
 
+  // a graph held on an old ontology version is unstuck by a migration (2026-11-20)
+  await G.openGraph(page, BASE, /^Онтология: Магазин$/);
+  const removed = await page.evaluate(() => loretile.store.append_BANG_(cljs.reader.read_string('{:ev/type :change :ops [[:node-remove "process"]]}')));
+  check(removed === null, 'the ontology drops the type «процесс» (no usage checks there)');
+  await G.openGraph(page, BASE, /^Магазин$/);
+  await page.goto(BASE + '#/ontology', { waitUntil: 'networkidle0' }); await sleep(400);
+  check(/процесс/.test(await page.$eval('.migration', (e) => e.textContent).catch(() => '')),
+    'the graph using it is held on the old version, and its page says what the new one drops');
+  await page.select('.migration .migrate-type', 'role');
+  await page.click('.migration .migrate-go'); await sleep(600);
+  const lm = await log();
+  check(/:ontology-copy/.test(lm.split(':node-set').slice(-2).join('')) || /:kind :role/.test(lm), 'one change: the new copy and the node retyped');
+  check(await page.$('.migration') === null && /:node-set "[^"]+" \{:kind :role\}/.test(lm), 'the graph is on the new version; its process node is a role now');
+
+  // properties seen and searched (2026-11-20): the palette, a property under titles, the filter
+  await page.goto(BASE + '#/c/' + encodeURIComponent(pay), { waitUntil: 'networkidle0' }); await sleep(500);
+  await page.type('.node-props .prop-new-key', 'отдел');
+  await page.type('.node-props .prop-new-value', 'финансы');
+  await page.click('.node-props .prop-add-btn'); await sleep(400);
+  await page.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(500);
+  await addNode('Кладовщик', 'role');
+  await page.keyboard.down('Control'); await page.keyboard.press('k'); await page.keyboard.up('Control'); await sleep(300);
+  await page.type('.cmd-input', 'финансы'); await sleep(300);
+  const row = await page.$eval('.cmd-list li', (e) => e.textContent).catch(() => '');
+  check(/Оплата сч/.test(row) && /отдел: финансы/.test(row), `the palette finds a node by a property value, and says which (${row})`);
+  await page.keyboard.press('Enter'); await sleep(500);
+  check(decodeURIComponent(await page.evaluate(() => location.hash)) === '#/c/' + pay, 'and opens it');
+  await page.goto(BASE + '#/ontology', { waitUntil: 'networkidle0' }); await sleep(300);
+  await page.select('.graph-props .map-prop', 'отдел'); await sleep(300);
+  check(/:map-prop :отдел/.test(await log()), 'the property shown on the map is a graph property');
+  await page.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(900);
+  check(await page.$$eval('.node-prop', (ts) => ts.some((x) => x.textContent === 'финансы')), 'and shows under the node\'s title');
+  await page.click('.nav-filter'); await sleep(200);
+  await page.select('.filter-card .filter-key', 'отдел');
+  await page.select('.filter-card .filter-value', 'финансы'); await sleep(300);
+  const dimmed = await page.$$eval('.node', (ns) => ns.map((n) => [n.textContent.includes('Кладовщик'), n.classList.contains('filtered-out')]));
+  check(dimmed.some(([k, f]) => k && f) && dimmed.some(([k, f]) => !k && !f), 'the filter dims the nodes without that value, and only those');
+  await page.click('.filter-card .filter-clear'); await sleep(200);
+  check(!(await page.$('.node.filtered-out')), 'and clearing it brings them back');
+
   // the one form makes any graph: a title and its ontology (Denis 2026-11-19: no kind of graph is special)
   const formCreate = async (title, ontology) => {
     await page.waitForSelector('.new-graph-form');

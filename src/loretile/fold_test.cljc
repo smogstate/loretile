@@ -841,6 +841,7 @@
 ;; edges; a data graph carries a copy of it and never takes one that breaks
 ;; its data
 (defn- ch [& ops] (e :change :ops (vec ops)))
+(defn- ch-ops [ops] (e :change :ops (vec ops)))
 
 (def shop-ontology
   [(ch [:graph-set {:ontology "ontology" :title "Магазин"}]
@@ -927,9 +928,57 @@
               (is (= #{"checkout"} (set (:gaps check))) "and the one nobody performs is the gap")
               (is (= :ontology-elsewhere (:error (f/guard with-q (e :cq-retired :id "cq-who"))))
                   "an inherited question is retired in its ontology graph"))))
+        (testing "a MIGRATION — the new copy with the data retyped — is judged whole (2026-11-20)"
+          (let [no-rule (-> v (assoc :id "o-shop")
+                            (update :node-types #(-> (vec (remove (comp #{:rule} :id) %)) (conj {:id :law :label "закон"})))
+                            (update :relations #(-> (vec (remove (comp #{:governed-by} :id) %))
+                                                    (conj {:id :bound-by :label "подчиняется" :from #{:process} :to #{:law}}))))
+                copy [:graph-set {:ontology-version "v2" :ontology-copy no-rule}]]
+            (is (nil? (f/guard bound (ch copy [:node-set "vat" {:kind :law}]
+                                         [:edge-remove "invoice" :governed-by "vat"]
+                                         [:edge-set "invoice" :bound-by "vat" {}])))
+                "retyped to a type only the new version has, relinked by a new relation: accepted")
+            (is (nil? (f/guard bound (ch copy [:node-set "vat" {:kind :law}] [:edge-remove "invoice" :governed-by "vat"])))
+                "or the dropped relation's links simply removed")
+            (is (= :ontology-breaks-data (:error (f/guard bound (ch copy [:node-set "vat" {:kind :law}]))))
+                "a dropped relation still used is not left without meaning")
+            (is (= :relation-misfit (:error (f/guard bound (ch copy [:node-set "vat" {:kind :law}]
+                                                             [:edge-remove "invoice" :governed-by "vat"]
+                                                             [:edge-set "vat" :bound-by "invoice" {}]))))
+                "and every edge must fit its relation in the new version")))
         (testing "a copy that only adds passes"
           (is (nil? (f/guard bound (ch [:graph-set {:ontology-version "v2"
                                                     :ontology-copy (update (assoc v :id "o-shop") :node-types conj {:id :metric :label "метрика"})}])))))))))
+
+(deftest an-edit-is-reversed-not-erased
+  ;; undo (2026-11-20): a new change whose ops put back what an event did
+  (let [base (f/kg shop-events)
+        undo (fn [evs e] (let [before (f/kg evs) ops (f/undo-ops before e)]
+                           (f/kg (conj (conj evs e) (ch-ops ops)))))
+        same? (fn [a b] (and (= (set (keys (:concepts a))) (set (keys (:concepts b))))
+                             (= (set (map (juxt :from :type :to) (:edges a))) (set (map (juxt :from :type :to) (:edges b))))))]
+    (testing "a property set, then undone"
+      (let [e (ch [:node-set "invoice" {:sla "2 дня" :title "Счёт"}])
+            k (undo shop-events e)]
+        (is (nil? (get-in k [:concepts "invoice" :sla])))
+        (is (= "Выставление счёта" (get-in k [:concepts "invoice" :title])))))
+    (testing "a node removed — with its links — comes back"
+      (let [k (undo shop-events (ch [:node-remove "invoice"]))]
+        (is (same? base k))))
+    (testing "the editor's own events"
+      (is (same? base (undo shop-events (e :concept-accepted :concept (typed "x" "Икс" :process)))))
+      (is (same? base (undo shop-events (e :concept-discarded :id "invoice"))))
+      (is (same? base (undo shop-events (e :edge-accepted :edge {:from "accountant" :to "checkout" :type :performs :provenance :authored}))))
+      (is (= "Выставление счёта" (get-in (undo shop-events (e :version-created :entity :concept :id "invoice" :change :patch
+                                                              :payload {:title "Новое имя"}))
+                                         [:concepts "invoice" :title]))))
+    (testing "a change of several ops is reversed as a whole, last op first"
+      (let [k (undo shop-events (ch [:node-set "z" {:title "Зет" :kind :rule}] [:edge-set "invoice" :governed-by "z" {}]))]
+        (is (same? base k))))
+    (testing "an undo is itself a valid change"
+      (let [e (ch [:node-remove "invoice"])
+            evs (conj shop-events e)]
+        (is (nil? (f/guard (f/kg evs) (ch-ops (f/undo-ops (f/kg shop-events) e)))))))))
 
 (deftest an-ontology-that-can-grow-hears-about-unfitting-pairs
   ;; slice 4 (2026-11-20): role ↔ rule has no relation in the shop ontology;

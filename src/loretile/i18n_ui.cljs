@@ -70,6 +70,24 @@
    :ui/prop-value {:ru "значение" :de "Wert" :en "value"}
    :ui/cq-checked-in-graphs {:ru "проверяется в графах с этой онтологией" :de "wird in den Graphen mit dieser Ontologie geprüft" :en "checked in the graphs using this ontology"}
    :ui/cq-inherited {:ru "из онтологии" :de "aus der Ontologie" :en "from the ontology"}
+   :ui/migration-heading {:ru "Новая версия онтологии ждёт" :de "Eine neue Version der Ontologie wartet" :en "A new ontology version is waiting"}
+   :ui/migration-lead {:ru "В новой версии «{onto}» нет того, чем пользуются данные этого графа. Выберите, чем это станет, — граф перейдёт на новую версию одним изменением." :de "Der neuen Version von „{onto}“ fehlt, was die Daten dieses Graphen verwenden. Wählen Sie, was daraus wird — der Graph wechselt in einer Änderung." :en "The new version of «{onto}» lacks what this graph's data uses. Choose what it becomes — the graph moves over in one change."}
+   :ui/migration-type {:ru "тип «{type}» — узлов: {n} → станет" :de "Typ „{type}“ — Knoten: {n} → wird" :en "type «{type}» — {n} nodes → becomes"}
+   :ui/migration-relation {:ru "связь «{rel}» — связей: {n} → станет" :de "Beziehung „{rel}“ — Kanten: {n} → wird" :en "relation «{rel}» — {n} links → becomes"}
+   :ui/migration-remove-links {:ru "удалить эти связи" :de "diese Kanten entfernen" :en "remove these links"}
+   :ui/migration-go {:ru "Перейти на новую версию" :de "Zur neuen Version wechseln" :en "Move to the new version"}
+   :ui/migration-done {:ru "Граф на новой версии онтологии" :de "Der Graph ist auf der neuen Version" :en "The graph is on the new version"}
+   :ui/prop-filter {:ru "Фильтр по свойству" :de "Nach Eigenschaft filtern" :en "Filter by property"}
+   :ui/prop-filter-any {:ru "— любое значение —" :de "— jeder Wert —" :en "— any value —"}
+   :ui/prop-filter-clear {:ru "Сбросить" :de "Zurücksetzen" :en "Clear"}
+   :ui/map-prop {:ru "свойство под названием на карте" :de "Eigenschaft unter dem Namen auf der Karte" :en "property shown under titles on the map"}
+   :ui/map-prop-none {:ru "— не показывать —" :de "— keine —" :en "— none —"}
+   :ui/undo {:ru "Отменить последнее изменение" :de "Letzte Änderung rückgängig" :en "Undo the last change"}
+   :ui/redo {:ru "Вернуть отменённое" :de "Wiederherstellen" :en "Redo"}
+   :ui/undone {:ru "Отменено" :de "Rückgängig gemacht" :en "Undone"}
+   :ui/redone {:ru "Возвращено" :de "Wiederhergestellt" :en "Redone"}
+   :ui/nothing-to-undo {:ru "Нечего отменять" :de "Nichts rückgängig zu machen" :en "Nothing to undo"}
+   :ui/nothing-to-redo {:ru "Нечего возвращать" :de "Nichts wiederherzustellen" :en "Nothing to redo"}
    :ui/prop-icon {:ru "значок" :de "Symbol" :en "icon"}
    :ui/icon-none {:ru "без значка" :de "ohne Symbol" :en "no icon"}
    :ui/style-reset {:ru "вернуть унаследованный" :de "auf geerbt zurücksetzen" :en "back to inherited"}
