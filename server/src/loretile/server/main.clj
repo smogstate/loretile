@@ -8,11 +8,17 @@
      POST /api/embed              → [:llm :embed-url] with the gateway token
      GET  /api/merges/?prefix=…   → the merge bucket listed as S3 XML
      GET  /api/merges/<key>       → one merge file
+     GET  /api/graphs             → every server-kept graph (EDN)
+     GET  /api/graphs/<id>?after=n → {:seq :events} after batch n (0: all)
+     POST /api/graphs/<id>/events → store {:events [...] :after n}; answers
+                                    {:seq :stored :events} (what it lacked)
 
    No authentication: it runs behind an auth proxy."
   (:gen-class)
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [loretile.server.config :as config]
+            [loretile.server.graphs :as graphs]
             [loretile.server.log :refer [log]]
             [loretile.server.s3 :as s3]
             [loretile.server.token :as token])
@@ -57,7 +63,8 @@
   "What the browser may know: no gateway url, no token."
   [cfg]
   (let [{:keys [shape model max-output embed-url embed-model]} (:llm cfg)]
-    (cond-> {:shape shape :model model :merges? (boolean (get-in cfg [:merges :url]))}
+    (cond-> {:shape shape :model model :merges? (boolean (get-in cfg [:merges :url]))
+             :graphs? (boolean (get-in cfg [:graphs :url]))}
       max-output (assoc :max-output max-output)
       (and embed-url embed-model) (assoc :embed-model embed-model))))
 
@@ -151,6 +158,29 @@
           :else (send! ex 200 "application/edn; charset=utf-8"
                        (:bytes (s3/get-object aws bucket (s3/join-key key rel) nil))))))))
 
+;; --- graphs kept by the server (loretile.server.graphs) -----------------------------
+
+(defn- send-edn! [ex status data]
+  (send! ex status "application/edn; charset=utf-8" (.getBytes ^String (pr-str data) StandardCharsets/UTF_8)))
+
+(defn- graphs-api! [^HttpExchange ex]
+  (let [method (.getRequestMethod ex)
+        rel (subs (.getPath (.getRequestURI ex)) (count "/api/graphs"))
+        [_ gid tail] (re-matches #"/?([^/]*)(/events)?/?" rel)]
+    (cond
+      (not (graphs/configured?)) (send-text! ex 404 "graphs url is not configured")
+      (nil? gid) (send-text! ex 404 "Not found")
+      (str/blank? gid) (if (= "GET" method) (send-edn! ex 200 (graphs/list-graphs)) (send-text! ex 405 "Method not allowed"))
+      (not (graphs/valid-id? gid)) (send-text! ex 400 "bad graph id")
+      (and (nil? tail) (= "GET" method))
+      (send-edn! ex 200 (graphs/events-after gid (some-> (query-param ex "after") parse-long)))
+      (and tail (= "POST" method))
+      (let [body (edn/read-string (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8))]
+        (if (and (map? body) (sequential? (:events body)))
+          (send-edn! ex 200 (graphs/append! gid (vec (:events body)) (:after body)))
+          (send-text! ex 400 "body must be {:events [...] :after n}")))
+      :else (send-text! ex 405 "Method not allowed"))))
+
 ;; --- routes ---------------------------------------------------------------------------
 
 (defn- route! [^HttpExchange ex]
@@ -160,6 +190,7 @@
       (= path "/api/llm") (proxy! ex :url)
       (= path "/api/embed") (proxy! ex :embed-url)
       (str/starts-with? path "/api/merges/") (merges! ex)
+      (or (= path "/api/graphs") (str/starts-with? path "/api/graphs/")) (graphs-api! ex)
       (str/starts-with? path "/api/") (send-text! ex 404 "Not found")
       :else (serve-file! ex))))
 

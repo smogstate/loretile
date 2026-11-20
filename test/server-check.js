@@ -1,6 +1,7 @@
 // The Loretile server (server/) in front of the RELEASE bundle (`make release`
 // first): a fake gateway that accepts only its second token, the server with a
-// token provider file and env overrides, and the app in backend mode.
+// token provider file and env overrides, the app in backend mode, and the
+// server-kept graphs API (list, load after a seq, store with resends skipped).
 // Usage: node test/server-check.js
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
@@ -39,7 +40,8 @@ const fail = (m) => { console.error('SERVER CHECK FAILED: ' + m); process.exitCo
   const cp = execFileSync('clojure', ['-Spath'], { cwd: path.join(ROOT, 'server') }).toString().trim();
   const server = spawn('java', ['-cp', `${path.join(ROOT, 'server/src')}:${cp}`, 'clojure.main', '-m', 'loretile.server.main'], {
     env: { ...process.env, LORETILE_CONFIG: 'file://' + path.join(dir, 'config.edn'),
-           LLM_MODEL: 'from-env', SERVER_PUBLIC_DIR: path.join(ROOT, 'public') },
+           LLM_MODEL: 'from-env', SERVER_PUBLIC_DIR: path.join(ROOT, 'public'),
+           GRAPHS_URL: 'file://' + path.join(dir, 'graphs') },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
 
@@ -77,6 +79,31 @@ const fail = (m) => { console.error('SERVER CHECK FAILED: ' + m); process.exitCo
     if (reply !== 200) fail('api/llm answered ' + reply);
     if (seen.map((x) => x.auth).join(',') !== 'Bearer tok-1,Bearer tok-2') fail('token refresh on 401: ' + JSON.stringify(seen.map((x) => x.auth)));
     if (errors.length) fail('page errors: ' + errors.join('; '));
+
+    // graphs kept by the server (wiki/Graph-Sync.md): list, load, store
+    if (!meta.includes(':graphs? true')) fail('the backend meta does not say graphs are kept: ' + meta);
+    const api = (p, opts) => fetch(`http://localhost:${PORT}/api/graphs${p}`, opts).then(async (r) => ({ status: r.status, text: await r.text() }));
+    const post = (id, body) => api(`/${id}/events`, { method: 'POST', headers: { 'content-type': 'application/edn' }, body });
+    let r = await api('');
+    if (r.status !== 200 || r.text.trim() !== '[]') fail('an empty store lists no graphs: ' + r.status + ' ' + r.text);
+    const ev = (id, ts, ops) => `{:ev/id "${id}" :ev/ns "g-1" :ev/actor "a" :ev/ts ${ts} :ev/type :change :ops ${ops}}`;
+    r = await post('g-1', `{:after 0 :events [${ev('e1', 1, '[[:graph-set {:title "Магазин"}]]')} ${ev('e2', 2, '[[:node-set "x" {:title "Икс"}]]')}]}`);
+    if (!/:seq 1/.test(r.text) || !/:stored 2/.test(r.text) || !/:events \[\]/.test(r.text)) fail('a first batch is stored as seq 1: ' + r.text);
+    r = await post('g-1', `{:after 1 :events [${ev('e2', 2, '[[:node-set "x" {:title "Икс"}]]')}]}`);
+    if (!/:seq 1/.test(r.text) || !/:stored 0/.test(r.text)) fail('a resent event is skipped, no new batch: ' + r.text);
+    // a second browser, behind, sends its own and gets the first one's
+    r = await post('g-1', `{:after 0 :events [${ev('b1', 3, '[[:node-set "y" {:title "Игрек"}]]')}]}`);
+    if (!/:seq 2/.test(r.text) || !/"e1"/.test(r.text) || !/"e2"/.test(r.text) || /"b1"/.test(r.text))
+      fail('a second client gets what it lacked, not its own: ' + r.text);
+    r = await api('/g-1?after=1');
+    if (!/:seq 2/.test(r.text) || !/"b1"/.test(r.text) || /"e1"/.test(r.text)) fail('load after a seq returns only later batches: ' + r.text);
+    r = await api('/g-1');
+    if (!/"e1"/.test(r.text) || !/"b1"/.test(r.text)) fail('load without after returns the whole graph: ' + r.text);
+    r = await api('');
+    if (!/:id "g-1"/.test(r.text) || !/:title "Магазин"/.test(r.text) || !/:events 3/.test(r.text)) fail('the list names the graph, its title and size: ' + r.text);
+    r = await api('/..%2Fetc');
+    if (r.status !== 400 && r.status !== 404) fail('a bad graph id is refused: ' + r.status);
+    if (!fs.existsSync(path.join(dir, 'graphs', 'g-1', '000000000002.edn'))) fail('batches are files on disk');
   } finally {
     await browser.close();
     server.kill();

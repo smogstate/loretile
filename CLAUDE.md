@@ -4,7 +4,7 @@ Learning platform: knowledge graph of small learning objects, per-learner master
 
 ## Where things are
 
-- **Wiki** `wiki/` (start at `wiki/Home.md`) — every decision. Data model: `wiki/Data-Model.md`. Ontologies: `wiki/Profiles.md`; the ontology as its own graph (2026-11-19, in progress): `wiki/Ontology-Graph.md`; one fold for every graph, a property graph (2026-11-19, PROPOSAL): `wiki/Property-Graph.md`.
+- **Wiki** `wiki/` (start at `wiki/Home.md`) — every decision. Data model: `wiki/Data-Model.md`. Ontologies: `wiki/Profiles.md`; the ontology as its own graph (2026-11-19, in progress): `wiki/Ontology-Graph.md`; one fold for every graph, a property graph: `wiki/Property-Graph.md`; graphs kept by the server, local-first sync (2026-11-20, in progress): `wiki/Graph-Sync.md`.
 - **How the code is built, area by area** → `wiki/Code.md` (read the section before changing an area; the design page says why; run the area's checks after):
 
 | area | how it is built | decided in | checks (`test/<name>-check.js`) |

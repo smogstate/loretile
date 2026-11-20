@@ -6,10 +6,11 @@
   (:require [clojure.string :as str])
   (:import (java.net URI)
            (software.amazon.awssdk.core ResponseBytes)
+           (software.amazon.awssdk.core.sync RequestBody)
            (software.amazon.awssdk.core.sync ResponseTransformer)
            (software.amazon.awssdk.regions Region)
            (software.amazon.awssdk.services.s3 S3Client)
-           (software.amazon.awssdk.services.s3.model GetObjectRequest GetObjectResponse ListObjectsV2Request S3Exception S3Object)))
+           (software.amazon.awssdk.services.s3.model GetObjectRequest GetObjectResponse ListObjectsV2Request PutObjectRequest S3Exception S3Object)))
 
 (defn parse-url
   "s3://bucket/some/key → {:bucket \"bucket\" :key \"some/key\"}"
@@ -50,3 +51,10 @@
 
 (defn join-key [prefix k]
   (if (str/blank? prefix) k (str (str/replace prefix #"/+$" "") "/" k)))
+
+(defn put-object!
+  "Write `bytes` at `key`."
+  [aws bucket key ^bytes bytes content-type]
+  (.putObject (client aws)
+              ^PutObjectRequest (-> (PutObjectRequest/builder) (.bucket bucket) (.key key) (.contentType content-type) .build)
+              (RequestBody/fromBytes bytes)))

@@ -28,6 +28,11 @@
  ;; merge files: merges/{graph-id}/*.edn under this bucket and prefix
  :merges {:url "s3://loretile-merges"}
 
+ ;; graphs kept by the server (local-first: browsers sync their event logs
+ ;; here): {graph-id}/{seq}.edn — one object per stored batch. A directory
+ ;; (file:///var/lib/loretile/graphs) or a bucket and prefix (s3://…/graphs)
+ :graphs {:url "file:///var/lib/loretile/graphs"}
+
  ;; S3 client for the config file and the merges (credentials: the AWS
  ;; default chain — IAM role, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY…)
  :aws {:region "eu-central-1"

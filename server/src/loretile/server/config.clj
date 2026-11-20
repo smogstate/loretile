@@ -31,6 +31,7 @@
    [[:llm :auth-header] :string "Authorization"]
    [[:llm :auth-prefix] :string "Bearer "]
    [[:merges :url] :string nil]
+   [[:graphs :url] :string nil]
    [[:aws :region] :string nil]
    [[:aws :endpoint] :string nil]])
 
