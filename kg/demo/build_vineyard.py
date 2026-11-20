@@ -4,6 +4,10 @@ demo graph (a craft, not IT — the platform is domain-agnostic): 14 topics,
 2 sources, 20 objects, 28 items, one published course. Same architecture
 as build.py / build_infosec.py. Regenerate: python3 kg/demo/build_vineyard.py"""
 import json
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from changes import as_change  # noqa: E402
 
 T0 = 1757100000000
 LOCS = ("ru", "en", "de")
@@ -389,7 +393,7 @@ def build(loc):
     def ev(type_, **kv):
         e = {"ev/id": f"vin-{len(events):03d}", "ev/ns": "demo", "ev/actor": "demo-author",
              "ev/ts": T0 + len(events) * 60000, "ev/type": ":" + type_}
-        e.update(kv)
+        as_change(e, type_, kv)
         events.append(e)
 
     for sid, title, ref in SOURCES:

@@ -91,7 +91,8 @@ const MOCK_OPS = {
   }
   check((await page.$$('.card')).length === 0, 'all cards resolved');
   const logC = await page.evaluate(() => loretileLog());
-  check(/:object-added/.test(logC) && /:question-raised/.test(logC), 'ticked drafts went in with their topics');
+  const ops = logC.split('[:node-set ').slice(1);
+  check(ops.some((o) => o.includes(':is :object')) && ops.some((o) => o.includes(':is :question')), 'ticked drafts went in with their topics');
 
   // nodes landed on the map (split view shows map left)
   await sleep(800); // physics settle

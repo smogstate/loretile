@@ -1,6 +1,7 @@
 // The integrity block of review 2026-10-16, as a person meets it:
-//  A3  an imported log is replayed through the guard: a file whose custom
-//      profile takes a learning relation id is refused, the graph unchanged
+//  A3  an imported log is replayed through the guard: a file whose graph
+//      takes an ontology copy that declares a learning relation id is
+//      refused, the graph unchanged
 //  A5  the topic editor belongs to its topic: going to another topic with
 //      the form open does not carry the first topic's text along
 //  A6  a new course never takes an existing course's id
@@ -18,7 +19,8 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-'));
 const CRAFTED = path.join(dir, 'log.edn');
-fs.writeFileSync(CRAFTED, '{:ev/id "x1" :ev/ns "g" :ev/actor "a" :ev/ts 1 :ev/type :profile-set :profile {:id "evil" :title "Evil" :node-types [{:id :thing :label "thing"}] :relations [{:id :requires :label "requires" :ordering? true}]}}\n');
+// a well-formed `change` (the schema takes it): only the guard can refuse it
+fs.writeFileSync(CRAFTED, '{:ev/id "x1" :ev/ns "g" :ev/actor "a" :ev/ts 1 :ev/type :change :ops [[:graph-set {:ontology "evil" :ontology-copy {:id "evil" :title "Evil" :node-types [{:id :thing :label "thing"}] :relations [{:id :requires :label "requires" :from #{:thing} :to #{:thing} :ordering? true}]}}]]}\n');
 
 (async () => {
   const browser = await puppeteer.launch({ executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox', '--disable-gpu'] });
@@ -51,12 +53,14 @@ fs.writeFileSync(CRAFTED, '{:ev/id "x1" :ev/ns "g" :ev/actor "a" :ev/ts 1 :ev/ty
   // import lives in the Graphs view and makes a graph of its own (2026-11-19)
   await page.goto(BASE + '#/graphs', { waitUntil: 'networkidle0' }); await sleep(300);
   await (await page.$('.import-graph input[type=file]')).uploadFile(CRAFTED); await sleep(800);
-  check(/не импортирован/.test(await text('div.error')), 'A3: a log whose profile takes «requires» is refused, in words');
+  const a3 = await text('div.error');
+  check(/не импортирован/.test(a3), 'A3: a log whose ontology copy takes «requires» is refused, in words');
+  check(/:refused :bad-profile/.test(a3), 'A3: refused by the guard (an unsound vocabulary), not by the schema');
   check((await page.evaluate(() => loretileLog())) === log0, 'A3: and the open graph is unchanged');
   await page.evaluate(() => { const b = document.querySelector('div.error button'); if (b) b.click(); });
 
   // --- A5 -------------------------------------------------------------------
-  const ids = [...new Set([...log0.matchAll(/:concept-accepted, :concept \{:id "([^"]+)"/g)].map((m) => m[1]))];
+  const ids = [...new Set([...log0.matchAll(/\[:node-set "([^"]+)" \{:title "[^"]*", :definition/g)].map((m) => m[1]))];
   await page.goto(BASE + '#/c/' + encodeURIComponent(ids[0]), { waitUntil: 'networkidle0' }); await page.reload({ waitUntil: 'networkidle0' }); await sleep(600);
   await page.click('.def-row .pt-edit'); await sleep(200);
   const firstDef = await page.$eval('.def-row .form.edit textarea', (e) => e.value);
@@ -83,21 +87,21 @@ fs.writeFileSync(CRAFTED, '{:ev/id "x1" :ev/ns "g" :ev/actor "a" :ev/ts 1 :ev/ty
   const h2 = await publish('Основы: запросов');
   check(/#\/course\/основы-запросов$/.test(h1) && /#\/course\/основы-запросов-2$/.test(h2),
     'A6: two titles with the same slug get two courses (' + h1 + ', ' + h2 + ')');
-  check(((await page.evaluate(() => loretileLog())).match(/:id "основы-запросов"/g) || []).length === 1, 'A6: the first course was not overwritten');
+  check(((await page.evaluate(() => loretileLog())).match(/\[:node-set "основы-запросов" /g) || []).length === 1, 'A6: the first course was not overwritten');
 
   // --- A14 ------------------------------------------------------------------
   // a prerequisite of the demo course (a requires-edge target that is not a course target)
   const log1 = await page.evaluate(() => loretileLog());
-  const course = log1.match(/:course-published, :course \{:id "([^"]+)"[^]*?:targets \[([^\]]*\])*\]/);
+  const course = log1.match(/\[:node-set "([^"]+)" \{:title "[^"]*", :targets \[([^\]]*\])*\]/);
   const cid = course[1];
   const targets = new Set([...course[0].matchAll(/\["([^"]+)" :/g)].map((m) => m[1]));
-  const edges = [...log1.matchAll(/:edge \{:from "([^"]+)", :to "([^"]+)", :type :requires/g)].map((m) => [m[1], m[2]]);
+  const edges = [...log1.matchAll(/\[:edge-set "([^"]+)" :requires "([^"]+)"/g)].map((m) => [m[1], m[2]]);
   const reach = new Set(targets); let grew = true;
   while (grew) { grew = false; for (const [a, b] of edges) if (reach.has(a) && !reach.has(b)) { reach.add(b); grew = true; } }
   const prereq = [...reach].find((x) => !targets.has(x));
   await page.evaluate((id) => {
     const log = loretileLog();
-    localStorage.setItem('loretile-kg-log', log.replace(/\]\s*$/, ` {:ev/id "dep-1" :ev/ns "t" :ev/actor "t" :ev/ts 9999999999 :ev/type :concept-deprecated :id "${id}"}]`));
+    localStorage.setItem('loretile-kg-log', log.replace(/\]\s*$/, ` {:ev/id "dep-1" :ev/ns "t" :ev/actor "t" :ev/ts 9999999999 :ev/type :change :ops [[:node-set "${id}" {:status :deprecated}]]}]`));
   }, prereq);
   await page.goto(BASE + '#/course/' + encodeURIComponent(cid), { waitUntil: 'networkidle0' }); await page.reload({ waitUntil: 'networkidle0' }); await sleep(600);
   check(prereq && await page.$eval('.republish', (b) => b.disabled).catch(() => false),

@@ -8,6 +8,7 @@
             [promesa.core :as p]
             [reagent.core :as r]
             [loretile.fold :as fold]
+            [loretile.ops :as ops]
             [loretile.icons :as icons]
             [loretile.llm :as llm]
             [loretile.profile :as profile]
@@ -253,7 +254,7 @@
           (swap! cards #(into [{:card :version-of
                                 :data {:id (str "v-" src-id) :new src-id :new-title (:name d) :candidates cands}}]
                               %)))
-        (store/append! {:ev/type :source-added :source {:id src-id :title (:name d) :ref ref}}))
+        (store/append! (ops/add-source {:id src-id :title (:name d) :ref ref})))
       ;; the browser File stays out: it went to the blob store above, and in
       ;; the saved sitting it printed as #object[File …], which nothing can
       ;; read back — the next save then wiped every shelved sitting
@@ -662,11 +663,10 @@
                              (nil? (profile/relation p (keyword (:type %)))))
               {waiting true fits false} (group-by (comp boolean new-rel?) (apply concat found))
               ok-e (filterv #(nil? (store/append!
-                                    {:ev/type :edge-proposed
-                                     :edge {:from (:from %) :to (:to %)
-                                            :type (keyword (or (:type %) (default-relation)))
-                                            :provenance :llm-drafted
-                                            :justification (:why %)}}))
+                                    (ops/propose-edge {:from (:from %) :to (:to %)
+                                                       :type (keyword (or (:type %) (default-relation)))
+                                                       :provenance :llm-drafted
+                                                       :justification (:why %)})))
                             fits)]
           (reset! store/last-error nil)
           (swap! cards into (for [e ok-e] {:card :edge :data e}))
@@ -946,9 +946,7 @@
     (if-let [err (store/add-to-ontology! (:graph data) [[:node-set (:id data) {:title (:title data)}]])]
       (reset! store/last-error err)
       (let [ws (filter #(= (:id data) (:waits-type %)) @cards)
-            ok (filterv #(nil? (store/append! {:ev/type :concept-proposed
-                                                :concept (concept-payload (:data %))
-                                                :provenance :llm-drafted}))
+            ok (filterv #(nil? (store/append! (ops/propose-node (concept-payload (:data %)) :llm-drafted)))
                         ws)
             ok? (set ok)]
         (reset! store/last-error nil)
@@ -1027,10 +1025,7 @@
             ;; dashed ghosts; the guard drops duplicates and re-proposals of
             ;; discarded things, and their cards with them. Concepts from a
             ;; document carry its source id into the accept (→ grounded-in)
-            ok-c (filterv #(nil? (store/append!
-                                  {:ev/type :concept-proposed
-                                   :concept (concept-payload %)
-                                   :provenance :llm-drafted}))
+            ok-c (filterv #(nil? (store/append! (ops/propose-node (concept-payload %) :llm-drafted)))
                           (map #(cond-> % src (assoc :source-id src)) fits))
             waiting (map #(cond-> % src (assoc :source-id src)) waiting)]
         (when (seq waiting) (add-type-drafts! oid waiting))
@@ -1548,7 +1543,7 @@
   (if (foreign?)
     (refuse-foreign!)
     (let [{:keys [source concept]} (:data c)]
-      (when-not (store/append! {:ev/type :source-updated :id source :change change :concepts [concept]})
+      (when-not (store/append! (ops/update-source source change [concept]))
         (resolve-card! c)
         ;; stale is not a dead end: say what clears it
         (when (= :material change)
@@ -1564,7 +1559,7 @@
       (if split?
         (do (drop-card! c)
             (swap! cards into (for [cid concepts] {:card :reversion :data {:id (str "r-" source "-" cid) :source source :new new :concept cid}})))
-        (when-not (store/append! {:ev/type :source-updated :id source :change :patch :concepts (vec concepts)})
+        (when-not (store/append! (ops/update-source source :patch concepts))
           (resolve-card! c))))))
 
 (defn pick-version! [c old]
@@ -1676,12 +1671,11 @@
       (when-not (or (when-not (get-in (store/kg) [:concepts concept])
                       ;; its topic was discarded since: a question for nothing
                       (swap! msgs conj {:who :sys :text (t :chat/question-topic-gone)}))
-                    (store/append! {:ev/type :item-added
-                                    :item {:id id :primary-concept-id concept :level level :kind :single-choice
-                                           :locale (store/locale-for-new)
-                                           :origin (if (store/personal?) :generated :drafted)
-                                           :spec {:stem stem :options (vec options) :key key}}})
-                    (store/append! {:ev/type :item-accepted :id id}))
+                    (store/append! (ops/add-item {:id id :primary-concept-id concept :level level :kind :single-choice
+                                                  :locale (store/locale-for-new)
+                                                  :origin (if (store/personal?) :generated :drafted)
+                                                  :spec {:stem stem :options (vec options) :key key}}
+                                                 :active)))
         (resolve-card! c)))))
 
 (defn add-build-card!
@@ -1701,10 +1695,9 @@
     (cond
       (foreign?) (refuse-foreign!)
       (seq ready)
-      (when-not (store/append! {:ev/type :course-published
-                                :course {:id id :title (if (seq goal) goal (t :chat/build-default-title))
-                                         :targets (mapv (fn [cid] [cid (topic-level kg cid locale)]) ready)
-                                         :locale locale :pass-threshold 80}})
+      (when-not (store/append! (ops/publish-course {:id id :title (if (seq goal) goal (t :chat/build-default-title))
+                                                    :targets (mapv (fn [cid] [cid (topic-level kg cid locale)]) ready)
+                                                    :locale locale :pass-threshold 80}))
         (resolve-card! c)
         (set! js/location.hash (str "#/learn/" id))))))
 
@@ -1717,8 +1710,8 @@
   (swap! msgs conj {:who :sys :text (t :chat/cards-other-graph {"{title}" (store/graph-title @graph)})}))
 
 (defn- object-event [data]
-  {:ev/type :object-added
-   :object (cond-> {:id (str "o-" (random-uuid))
+  (ops/add-object
+   (cond-> {:id (str "o-" (random-uuid))
                     :concept-id (:concept data)
                     :kind (keyword (or (:kind data) "explanation"))
                     :level (keyword (or (:level data) "apprentice"))
@@ -1727,11 +1720,10 @@
                     ;; own graph has no curator — `generated` (ruling 2026-10-02)
                     :origin (if (store/personal?) :generated :drafted)
                     :text (:text data)}
-             (:source-id data) (assoc :grounded-in (:source-id data)))})
+             (:source-id data) (assoc :grounded-in (:source-id data)))))
 
 (defn- question-event [data]
-  {:ev/type :question-raised :id (str "q-" (random-uuid))
-   :concept-id (:concept data) :question (:question data)})
+  (ops/raise-question (str "q-" (random-uuid)) (:concept data) (:question data)))
 
 (defn accept! [{:keys [card data] :as c}]
   (if (foreign?)
@@ -1740,28 +1732,26 @@
     ;; append verbatim — the file's ids and actor are its provenance
     (let [err
           (case card
-            :concept (store/append! (or (:ev c) {:ev/type :concept-accepted
-                                                 :concept (concept-payload data)}))
+            :concept (store/append! (or (:ev c) (ops/accept-node (concept-payload data))))
             :edge (store/append! (or (:ev c)
-                                     {:ev/type :edge-accepted
-                                      :edge (cond-> {:from (:from data) :to (:to data)
-                                                     :type (keyword (or (:type data) (default-relation)))
-                                                     :provenance :llm-drafted
-                                                     :justification (:why data)}
-                                              ;; the card said «inference, not a quote» — so does the graph
-                                              (false? (:stated data)) (assoc :inferred? true))}))
+                                     (ops/accept-edge
+                                      (cond-> {:from (:from data) :to (:to data)
+                                               :type (keyword (or (:type data) (default-relation)))
+                                               :provenance :llm-drafted
+                                               :justification (:why data)}
+                                        ;; the card said «inference, not a quote» — so does the graph
+                                        (false? (:stated data)) (assoc :inferred? true)))))
             :object (store/append! (or (:ev c) (object-event data)))
             :question (store/append! (or (:ev c) (question-event data)))
-            :item (or (store/append! (:ev c)) (store/append! {:ev/type :item-accepted :id (:id data)}))
+            :item (or (store/append! (:ev c)) (store/append! (ops/item-status (:id data) :active)))
             :change (store/append! (:ev c))
             (:type :relation) (store/append! (vocab-event c (store/kg)))
             ;; a drafted exercise: the runtime judged it, the author accepts it
             :exercise (let [id (str "i-" (random-uuid))]
-                        (or (store/append! {:ev/type :item-added
-                                            :item {:id id :primary-concept-id (:concept data)
-                                                   :level :apprentice :kind :exercise :locale (store/locale-for-new)
-                                                   :origin (if (store/personal?) :generated :drafted) :spec (:spec data)}})
-                            (store/append! {:ev/type :item-accepted :id id}))))]
+                        (store/append! (ops/add-item {:id id :primary-concept-id (:concept data)
+                                                      :level :apprentice :kind :exercise :locale (store/locale-for-new)
+                                                      :origin (if (store/personal?) :generated :drafted) :spec (:spec data)}
+                                                     :active))))]
       (if err
         ;; the guard said no (a loop, a misfit…): the banner says why, and the
         ;; card stops offering an accept that can only be refused again —
@@ -1786,18 +1776,16 @@
     (refuse-foreign!)
     (do
       (when (= :concept card)
-        (store/append! {:ev/type :concept-discarded :id (:id data)})
+        (store/append! (ops/discard-node (:id data)))
         ;; its link cards can never be accepted now — they go with it
         (swap! cards (fn [cs] (vec (remove #(and (= :edge (:card %))
                                                  (#{(get-in % [:data :from]) (get-in % [:data :to])} (:id data)))
                                            cs)))))
       (when (= :edge card)
-        (store/append! {:ev/type :edge-discarded
-                        :edge {:from (:from data) :to (:to data)
-                               ;; the default the proposal was written with, or the
-                               ;; discard misses it and the ghost edge stays
-                               :type (keyword (or (:type data) (default-relation)))
-                               :provenance :llm-drafted}}))
+        (store/append! (ops/discard-edge {:from (:from data) :to (:to data)
+                                          ;; the default the proposal was written with, or the
+                                          ;; discard misses it and the ghost edge stays
+                                          :type (keyword (or (:type data) (default-relation)))})))
       (resolve-card! c))))
 
 (defn discard-all! [] (doseq [c @cards] (discard! c)))
@@ -2022,11 +2010,10 @@
         (doseq [{:keys [question relation asks-from]} (:accepted o)]
           (let [inverse? (boolean (and asks-from (contains? (:to relation) asks-from)
                                        (not (contains? (:from relation) asks-from))))]
-            (store/append! {:ev/type :cq-raised
-                            :cq (cond-> {:id (str "cq-" (random-uuid)) :question question
-                                         :pattern (cond-> {:relation (:id relation)}
-                                                    asks-from (assoc :from-type asks-from)
-                                                    inverse? (assoc :inverse? true))})})))
+            (store/append! (ops/raise-cq {:id (str "cq-" (random-uuid)) :question question
+                                          :pattern (cond-> {:relation (:id relation)}
+                                                     asks-from (assoc :from-type asks-from)
+                                                     inverse? (assoc :inverse? true))}))))
         (swap! cards (fn [cs] (vec (remove #(#{:profile-next :cq} (:card %)) cs))))
         (store/switch-graph! home)
         (if-let [err (store/bind! home oid)]
@@ -2132,10 +2119,7 @@
                       ;; builds its payload from the card, and the raw model map
                       ;; was refused untyped or accepted ungrounded (review
                       ;; 2026-10-16 A21)
-                      ok-c (filterv #(nil? (store/append!
-                                            {:ev/type :concept-proposed
-                                             :concept (concept-payload %)
-                                             :provenance :llm-drafted}))
+                      ok-c (filterv #(nil? (store/append! (ops/propose-node (concept-payload %) :llm-drafted)))
                                     (for [c (:concepts ops) :when (seq (:id c))]
                                       (cond-> (assoc c :type (name want-type))
                                         (and src text) (assoc :source-id src))))
@@ -2148,10 +2132,9 @@
                                         {:from node-id :to other :type (name (:id r)) :why (:why e)})
                                 (false? (:stated e)) (assoc :stated false)))
                       ok-e (filterv #(nil? (store/append!
-                                            {:ev/type :edge-proposed
-                                             :edge (cond-> {:from (:from %) :to (:to %) :type (:id r)
-                                                            :provenance :llm-drafted :justification (:why %)}
-                                                     (false? (:stated %)) (assoc :inferred? true))}))
+                                            (ops/propose-edge (cond-> {:from (:from %) :to (:to %) :type (:id r)
+                                                                       :provenance :llm-drafted :justification (:why %)}
+                                                                (false? (:stated %)) (assoc :inferred? true)))))
                                     edges)]
                   (reset! store/last-error nil)
                   (swap! msgs conj {:who :llm :text (or (:note ops) (if (or (seq ok-c) (seq ok-e)) (t :chat/gap-found) (t :chat/gap-nothing)))})
@@ -2264,20 +2247,31 @@
    the guard, so a bad relation is refused where the author can see it."
   [{:keys [data] :as c}]
   (let [{:keys [question relation asks-from]} data
+        kg (store/kg)
         p (store/profile)
-        rel (profile/relation p (:id relation))
-        rel (or rel (do (doseq [tid (concat (:from relation) (:to relation))
-                              :when (nil? (profile/node-type-of p tid))]
-                          (store/append! {:ev/type :node-type-added :node-type {:id tid :label (name tid)}}))
-                        (when (nil? (store/append! {:ev/type :relation-added :relation relation}))
-                          relation)))]
+        ;; a vocabulary lives in an ontology graph: the relation (and a type it
+        ;; names) is written there — this graph, when it is one; else the one
+        ;; this graph is bound to, when it is on this device
+        add-ops (fn [v] (concat (for [tid (distinct (concat (:from relation) (:to relation)))
+                                      :when (nil? (profile/node-type-of v tid))]
+                                  [:node-set (name tid) {:title (name tid)}])
+                                (for [f (:from relation) to (:to relation)]
+                                  [:edge-set (name f) (:id relation) (name to)
+                                   (select-keys relation [:label :inverse :description])])))
+        oid (get-in kg [:ontology :graph])
+        err (cond
+              (profile/relation p (:id relation)) nil
+              (:ontology-graph? kg) (store/append! (ops/change (add-ops (fold/vocabulary kg))))
+              (and oid (store/graph-on-device? oid)) (store/add-to-ontology! oid (add-ops p))
+              :else (reset! store/last-error {:error :unknown-relation :detail (:id relation)}))
+        _ (when (map? err) (reset! store/last-error err))
+        rel (when-not err (profile/relation (store/profile) (:id relation)))]
     (when rel
       (let [inverse? (boolean (and asks-from (contains? (:to rel) asks-from) (not (contains? (:from rel) asks-from))))]
-        (when (nil? (store/append! {:ev/type :cq-raised
-                                    :cq {:id (str "cq-" (random-uuid)) :question question
-                                         :pattern (cond-> {:relation (:id rel)}
-                                                    asks-from (assoc :from-type asks-from)
-                                                    inverse? (assoc :inverse? true))}}))
+        (when (nil? (store/append! (ops/raise-cq {:id (str "cq-" (random-uuid)) :question question
+                                                  :pattern (cond-> {:relation (:id rel)}
+                                                             asks-from (assoc :from-type asks-from)
+                                                             inverse? (assoc :inverse? true))})))
           (resolve-card! c))))))
 
 (defmulti card-view :card)

@@ -1,6 +1,6 @@
-// The ontology as an ordinary graph (wiki/Ontology-Graph.md, wiki/Property-Graph.md): a graph
-// that carried its own ontology is moved over at load — an ontology graph is
-// made from it and the data graph is bound by a copy; the ontology graph's
+// The ontology as an ordinary graph (wiki/Ontology-Graph.md, wiki/Property-Graph.md): an
+// ontology file makes an ontology graph and a data graph bound to it by a
+// copy (a graph property, in a change event); the ontology graph's
 // map draws types as nodes and relations as edges (a loop for type → same
 // type); a change made in the ontology graph flows into the bound graph; a
 // fresh ontology must be whole before a graph can use it; the deep link
@@ -37,20 +37,19 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   const nodes = () => page.evaluate(() => document.querySelectorAll('.node').length);
   const registry = () => page.evaluate(() => localStorage.getItem('loretile-graphs'));
 
-  // a graph with its own ontology, the pre-2026-11-19 shape
+  // an ontology file makes an ontology graph «Онтология: Магазин» and a graph
+  // «Магазин» bound to it (the load-time move of a graph carrying its own
+  // profile is gone with the profile event, 2026-11-20)
   if (await G.graphFromOntologyFile(page, path.join(__dirname, '..', 'kg', 'ontologies', 'business.edn'), 'Магазин') === null) {
     console.log('SKIP: release build — the ontology-file door is internal until slice 3'); await browser.close(); process.exit(0);
   }
   await sleep(800);
-  check(/:profile-set/.test(await page.evaluate(() => loretileLog())),
-    'a graph made from an ontology file carries the profile in its own log');
-
-  // load: it is moved over
+  // and both survive a reload
   await page.reload({ waitUntil: 'networkidle0' });
   await sleep(500);
   const reg = await registry();
   const log = () => page.evaluate(() => loretileLog());
-  check(/:ontology "ontology"/.test(reg), 'at load an ontology graph was made from it (a graph on the types ontology)');
+  check(/:ontology "ontology"/.test(reg), 'an ontology graph was made from the file (a graph on the types ontology)');
   check(/:ontology "o-/.test(reg), 'and the data graph is bound to it in the registry');
   check(/:ontology-copy/.test(await log()), 'the data graph carries a copy of its ontology, as a graph property');
   await page.goto(BASE + '#/ontology', { waitUntil: 'networkidle0' });
@@ -91,7 +90,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     const ns = await page.$$('.node');
     await ns[i].click(); await sleep(150);
   };
-  const idOf = async (title) => ((await log()).match(new RegExp(':id "([^"]+)",? :title "' + title + '"')) || [])[1];
+  const idOf = async (title) => ((await log()).match(new RegExp(':node-set "([^"]+)" \\{[^}]*:title "' + title + '"')) || [])[1];
   await addNode('Поставщик');
   await sleep(800);
   check(await page.$('.error') === null && await nodes() === typeCount + 1, 'a type is added on the ontology map');

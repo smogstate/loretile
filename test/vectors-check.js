@@ -14,9 +14,9 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
 // 70 concepts (> cap 60): 69 filler + group-by; one requires edge so 1-hop shows
 const ev = (n, body) => `{:ev/id "e${n}" :ev/ns "demo" :ev/actor "t" :ev/ts ${n} ${body}}`;
 const events = [];
-for (let i = 1; i <= 69; i++) events.push(ev(i, `:ev/type :concept-accepted :concept {:id "c${i}" :title "Тема ${i}" :definition "наполнитель ${i}"}`));
-events.push(ev(70, ':ev/type :concept-accepted :concept {:id "group-by" :title "GROUP BY" :definition "складывает строки в корзины"}'));
-events.push(ev(71, ':ev/type :edge-accepted :edge {:from "group-by" :to "c1" :type :requires :provenance :authored}'));
+for (let i = 1; i <= 69; i++) events.push(ev(i, `:ev/type :change :ops [[:node-set "c${i}" {:title "Тема ${i}" :definition "наполнитель ${i}" :status :accepted}]]`));
+events.push(ev(70, ':ev/type :change :ops [[:node-set "group-by" {:title "GROUP BY" :definition "складывает строки в корзины" :status :accepted}]]'));
+events.push(ev(71, ':ev/type :change :ops [[:edge-set "group-by" :requires "c1" {:provenance :authored :status :accepted}]]'));
 const SEED = '[' + events.join(' ') + ']';
 
 (async () => {

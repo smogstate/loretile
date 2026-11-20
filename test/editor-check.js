@@ -82,7 +82,7 @@ const check = (ok, name) => {
   // -- deep link into a concept popup
   const whereId = await page.evaluate(() => {
     const evs = loretileLog();
-    const m = evs.match(/:id "([^"]*where[^"]*)"/) || evs.match(/:id "(файл[^"]*)"/);
+    const m = evs.match(/:node-set "([^"]*where[^"]*)"/) || evs.match(/:node-set "(файл[^"]*)"/);
     return m ? m[1] : null;
   });
   await page.goto(BASE + '#/c/' + encodeURIComponent(whereId), { waitUntil: 'networkidle0' });

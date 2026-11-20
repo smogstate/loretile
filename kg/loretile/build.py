@@ -9,9 +9,10 @@ coding agent: `node out/mcp.js kg/loretile/loretile.edn`).
 Two kinds of knowledge, kept apart on purpose:
   MECHANICAL — read from the source every run, never typed by hand:
     modules (every namespace, its docstring as material), `depends-on`
-    (the :require graph), `emits` (who writes which :ev/type), `stores-in`
-    (which localStorage keys a module names), gates (every *-check.js,
-    its header comment as definition), events (the schema's map).
+    (the :require graph), `emits` (who builds which kind of `change` —
+    the constructors of ops.cljc, and raw changes), `stores-in` (which
+    storage keys a module names), gates (every *-check.js, its header
+    comment as definition), writes (ops.cljc's constructors).
     Edges here carry provenance :inferred-from-data.
   CURATED — written here from CLAUDE.md (rules) and the wiki (features in
     wiki/Code.md, decisions in their pages), :authored:
@@ -50,14 +51,41 @@ def edn(v):
     raise TypeError(v)
 
 events = []
-def ev(t, **kv):
-    payload = {Kw(k.replace('_', '-')): v for k, v in kv.items()}
-    e = {Kw('ev/id'): f'lc-{len(events) + 1:04d}', Kw('ev/ns'): NS, Kw('ev/actor'): 'build.py',
-         Kw('ev/ts'): 1792000000000 + len(events), Kw('ev/type'): Kw(t)}
-    e.update(payload)
-    events.append(e)
 
 def K(s): return Kw(s)
+
+def _rest(m, *drop):
+    return {k: v for k, v in m.items() if k not in (K('id'),) + tuple(K(d) for d in drop)}
+
+def ops_of(t, p):
+    """Every write is one `change` (wiki/Property-Graph.md, the learning
+    slice 2026-11-20): the ops for one described step, as ops.cljc builds them."""
+    if t == 'profile-set':
+        return [[K('graph-set'), {K('ontology'): 'software', K('ontology-copy'): p[K('profile')]}]]
+    if t == 'graph-owner-set':
+        return [[K('graph-set'), {K('owner'): p[K('owner')]}]]
+    if t == 'cq-raised':
+        q = p[K('cq')]
+        return [[K('node-set'), q[K('id')], {**_rest(q), K('is'): K('cq')}]]
+    if t == 'source-added':
+        x = p[K('source')]
+        return [[K('node-set'), x[K('id')], {**_rest(x), K('is'): K('source')}]]
+    if t == 'concept-accepted':
+        c = p[K('concept')]
+        return [[K('node-set'), c[K('id')], {**_rest(c), K('status'): K('accepted')}]]
+    if t == 'edge-accepted':
+        x = p[K('edge')]
+        return [[K('edge-set'), x[K('from')], x[K('type')], x[K('to')], _rest(x, 'from', 'to', 'type')]]
+    if t == 'object-added':
+        o = p[K('object')]
+        return [[K('node-set'), o[K('id')], {**_rest(o), K('is'): K('object')}]]
+    raise ValueError(t)
+
+def ev(t, **kv):
+    payload = {Kw(k.replace('_', '-')): v for k, v in kv.items()}
+    events.append({Kw('ev/id'): f'lc-{len(events) + 1:04d}', Kw('ev/ns'): NS, Kw('ev/actor'): 'build.py',
+                   Kw('ev/ts'): 1792000000000 + len(events), Kw('ev/type'): Kw('change'),
+                   Kw('ops'): ops_of(t, payload)})
 
 # ---------------------------------------------------------------- ontology
 PROFILE = {
@@ -68,7 +96,7 @@ PROFILE = {
     K('node-types'): [
         {K('id'): K('module'), K('label'): 'module', K('color'): '#4f7cff', K('description'): 'A ClojureScript namespace under src/loretile (or a JS worker under public/js).'},
         {K('id'): K('feature'), K('label'): 'feature', K('color'): '#2fa36b', K('description'): 'Something a person can do in the app, or a property it keeps; named in CLAUDE.md and wiki/Code.md.'},
-        {K('id'): K('event'), K('label'): 'event', K('color'): '#8a63d2', K('description'): 'One event type of the log (schema.cljc): the fold builds the graph from these.'},
+        {K('id'): K('event'), K('label'): 'write', K('color'): '#8a63d2', K('description'): 'One kind of write: every write is a `change` event; ops.cljc builds the kinds (a node accepted, an item added…), and a module may write raw changes.'},
         {K('id'): K('store'), K('label'): 'store', K('color'): '#6b7f99', K('description'): 'A localStorage key (or a family of keys) the app reads and writes.'},
         {K('id'): K('gate'), K('label'): 'gate', K('color'): '#2aa7b8', K('description'): 'A test: fold_test, a browser check test/<name>-check.js, or a Makefile target.'},
         {K('id'): K('rule'), K('label'): 'rule', K('color'): '#d9822b', K('description'): 'A rule an edit can break, from CLAUDE.md «Rules an edit can break».'},
@@ -83,7 +111,7 @@ PROFILE = {
          K('description'): 'module → feature: the module holds the code of the feature.'},
         {K('id'): K('emits'), K('label'): 'emits', K('inverse'): 'emitted by',
          K('from'): {K('module')}, K('to'): {K('event')},
-         K('description'): 'module → event: the module appends events of this type to the log.'},
+         K('description'): 'module → write: the module appends changes of this kind to the log.'},
         {K('id'): K('stores-in'), K('label'): 'keeps state in', K('inverse'): 'state of',
          K('from'): {K('module')}, K('to'): {K('store')},
          K('description'): 'module → store: the module reads or writes this storage key.'},
@@ -108,7 +136,7 @@ ev('graph-owner-set', owner={K('team'): 'Loretile', K('contact'): 'github.com/sm
 CQS = [
     ('cq-impl', 'Which module implements this feature?', {K('relation'): K('implements'), K('from-type'): K('feature'), K('inverse?'): True}),
     ('cq-gate', 'Which gate verifies this feature?', {K('relation'): K('verifies'), K('from-type'): K('feature'), K('inverse?'): True}),
-    ('cq-emit', 'Which module writes this event?', {K('relation'): K('emits'), K('from-type'): K('event'), K('inverse?'): True}),
+    ('cq-emit', 'Which module makes this kind of write?', {K('relation'): K('emits'), K('from-type'): K('event'), K('inverse?'): True}),
     ('cq-store', 'Which module keeps this store?', {K('relation'): K('stores-in'), K('from-type'): K('store'), K('inverse?'): True}),
     ('cq-rule-scope', 'What does this rule constrain?', {K('relation'): K('constrains'), K('from-type'): K('rule')}),
     ('cq-rule-why', 'Where was this rule decided?', {K('relation'): K('decided-in'), K('from-type'): K('rule')}),
@@ -172,7 +200,9 @@ for f in sorted(os.listdir(SRC)):
     short = name.replace('loretile.', '')
     doc = re.search(r'\(ns [\w.\-]+\s+"((?:[^"\\]|\\.)*)"', text, re.S)
     requires = sorted(set(re.findall(r'\[loretile\.([\w\-]+)', text)) - {short})
-    emits = sorted(set(re.findall(r':ev/type :([\w\-]+)', text)))
+    # what it writes: the ops.cljc constructors it calls, and raw changes
+    emits = sorted(set(re.findall(r'\(ops/([\w\-!?]+)', text))
+                   | ({'change'} if re.search(r'\{:ev/type :change', text) else set()))
     keys = sorted(set(re.findall(r'"(loretile-[a-z\-]+)', text)))
     modules[short] = dict(file='src/loretile/' + f, doc=doc.group(1).replace('\\"', '"') if doc else None,
                           requires=requires, emits=emits, keys=keys, lines=text.count('\n'))
@@ -186,39 +216,17 @@ for short, m in modules.items():
     if m['doc']:
         material('m-' + short, first_para(m['doc'], 1200), sid)
 
-# ---------------------------------------------------------------- MECHANICAL: events
-EVENT_DEFS = {
-    'profile-set': "The graph's ontology; the first event of a custom graph's log, refused once the graph has content.",
-    'relation-added': 'A relation joins a custom ontology (additive; the same soundness check as the profile).',
-    'node-type-added': 'A node type joins a custom ontology (additive).',
-    'cq-raised': 'A competency question the graph must answer; its pattern lets the fold check it.',
-    'cq-retired': 'A competency question withdrawn.',
-    'concept-proposed': 'A node proposed by the assistant: a dashed ghost on the map until accepted or discarded.',
-    'concept-accepted': 'A node joins the graph (a topic in learning, a typed node in a custom ontology).',
-    'concept-discarded': 'A proposal rejected or an accepted node removed, with its edges; never re-proposed.',
-    'concept-deprecated': 'A node marked deprecated (kept, flagged).',
-    'concept-split': 'One node becomes several; items and objects are remapped, edges dropped for the curator to redraw.',
-    'edge-proposed': 'A relation proposed between two nodes, waiting for a person.',
-    'edge-accepted': "A relation joins the graph, checked against the profile and every acyclic relation's DAG.",
-    'edge-discarded': 'A relation rejected or removed; never re-proposed.',
-    'object-added': 'Learning material (an object) hangs on a node.',
-    'object-promoted': 'An object becomes active again.',
-    'object-demoted': 'An object is taken out of use (removal by hand).',
-    'object-linked': 'Two objects of one topic linked: example-of, simpler-of or follows.',
-    'object-unlinked': 'An object link removed.',
-    'item-added': 'A question or exercise added to a topic (draft until accepted).',
-    'item-accepted': 'A question becomes dealable.',
-    'item-retired': 'A question is taken out of the pool (removal by hand).',
-    'version-created': 'An edit in place: patch reaches pinned learners at once, material waits for the next publication.',
-    'source-added': 'A document the graph is grounded in (content-addressed; bytes live in OPFS).',
-    'source-updated': 'A source changed: material changes stale what was written from it (optionally per topic).',
-    'question-raised': 'An open question to the expert, raised by the intake.',
-    'question-answered': 'The expert answered an open question.',
-    'course-published': 'A course is published: the newest one is the cut pinned learners fold at.',
-}
-schema_text = open(os.path.join(SRC, 'schema.cljc'), encoding='utf-8').read()
-for etype in re.findall(r'^\s+:([\w\-]+)\s+\((?:conj \()?ev :', schema_text, re.M):
-    node('e-' + etype, ':' + etype, EVENT_DEFS.get(etype, 'Event :' + etype + '.'), 'event', source('src-schema', 'src/loretile/schema.cljc', 'src/loretile/schema.cljc'))
+# ---------------------------------------------------------------- MECHANICAL: writes
+# every write is a `change`; its KINDS are ops.cljc's constructors (their
+# docstrings say what each does) plus a raw change
+ops_text = open(os.path.join(SRC, 'ops.cljc'), encoding='utf-8').read()
+OPS_SRC = source('src-ops', 'src/loretile/ops.cljc', 'src/loretile/ops.cljc')
+node('e-change', 'change', 'A raw `change` event: a list of ops (graph-set, node-set, node-remove, edge-set, edge-remove) applied atomically and guarded together.', 'event', OPS_SRC)
+for m in re.finditer(r'\(defn ([\w\-!?]+)\s+(?:"((?:[^"\\]|\\.)*)"\s+)?\[', ops_text):
+    name, doc = m.group(1), m.group(2)
+    if name == 'change':
+        continue
+    node('e-' + name, 'ops/' + name, first_para(doc, 300) if doc else 'ops/' + name + '.', 'event', OPS_SRC)
 
 # ---------------------------------------------------------------- MECHANICAL: stores
 STORE_DEFS = {
@@ -253,7 +261,8 @@ for short, m in modules.items():
             edge('m-' + short, 'm-' + r, 'depends-on', 'inferred-from-data', 'its ns :require')
     for e in m['emits']:
         if 'e-' + e in nodes:
-            edge('m-' + short, 'e-' + e, 'emits', 'inferred-from-data', 'writes {:ev/type :' + e + '}')
+            edge('m-' + short, 'e-' + e, 'emits', 'inferred-from-data',
+                 'writes raw {:ev/type :change}' if e == 'change' else 'calls ops/' + e)
     for k in m['keys']:
         edge('m-' + short, 's-' + k, 'stores-in', 'inferred-from-data', 'names the key "' + k + '"')
 edge('m-blobs', 's-opfs', 'stores-in', 'inferred-from-data', 'navigator.storage.getDirectory')

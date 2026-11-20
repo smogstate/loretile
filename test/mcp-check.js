@@ -82,14 +82,14 @@ const text = (r) => (r.result && r.result.content && r.result.content[0].text) |
   fs.symlinkSync(path.join(dir, 'secret.md'), path.join(docs, 'link.md'));
   const ev = (id, rest) => `{:ev/id "${id}" :ev/ns "t" :ev/actor "t" :ev/ts 1 ${rest}}`;
   fs.writeFileSync(path.join(dir, 'log.edn'), [
-    ev('1', ':ev/type :source-added :source {:id "s-ap" :title "ap.md" :ref "x.md"}'),
-    ev('2', ':ev/type :source-added :source {:id "s-out" :title "../secret.md" :ref "../secret.md"}'),
-    ev('3', ':ev/type :source-added :source {:id "s-bin" :title "blob.md" :ref "blob.md"}'),
-    ev('4', ':ev/type :concept-accepted :concept {:id "pay-run" :title "Payment run" :definition "weekly" :source-id "s-ap" :evidence "Payment runs happen every Thursday"}'),
-    ev('5', ':ev/type :concept-accepted :concept {:id "leak" :title "Leak" :definition "x" :source-id "s-out" :evidence "TOP SECRET"}'),
-    ev('6', ':ev/type :concept-accepted :concept {:id "bin" :title "Bin" :definition "x" :source-id "s-bin" :evidence "binary"}'),
-    ev('7', ':ev/type :source-added :source {:id "s-link" :title "link.md" :ref "link.md"}'),
-    ev('8', ':ev/type :concept-accepted :concept {:id "via-link" :title "Via link" :definition "x" :source-id "s-link" :evidence "TOP SECRET"}'),
+    ev('1', ':ev/type :change :ops [[:node-set "s-ap" {:is :source :title "ap.md" :ref "x.md"}]]'),
+    ev('2', ':ev/type :change :ops [[:node-set "s-out" {:is :source :title "../secret.md" :ref "../secret.md"}]]'),
+    ev('3', ':ev/type :change :ops [[:node-set "s-bin" {:is :source :title "blob.md" :ref "blob.md"}]]'),
+    ev('4', ':ev/type :change :ops [[:node-set "pay-run" {:title "Payment run" :definition "weekly" :source-id "s-ap" :evidence "Payment runs happen every Thursday" :status :accepted}]]'),
+    ev('5', ':ev/type :change :ops [[:node-set "leak" {:title "Leak" :definition "x" :source-id "s-out" :evidence "TOP SECRET" :status :accepted}]]'),
+    ev('6', ':ev/type :change :ops [[:node-set "bin" {:title "Bin" :definition "x" :source-id "s-bin" :evidence "binary" :status :accepted}]]'),
+    ev('7', ':ev/type :change :ops [[:node-set "s-link" {:is :source :title "link.md" :ref "link.md"}]]'),
+    ev('8', ':ev/type :change :ops [[:node-set "via-link" {:title "Via link" :definition "x" :source-id "s-link" :evidence "TOP SECRET" :status :accepted}]]'),
   ].join('\n'));
   const srv2 = spawn('node', [SERVER, path.join(dir, 'log.edn'), '--sources', docs]);
   let buf2 = ''; const pend2 = new Map(); let n2 = 0;

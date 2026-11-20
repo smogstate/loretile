@@ -88,8 +88,9 @@ fs.writeFileSync(other, '# Посторонний\n\nТекст.\n');
   check(!!patchedId, patched + ': «just corrections»');
   await sleep(300);
 
-  // events are maps: match each as a set of fields, whatever their order
-  const evs = (await log()).split('{:ev/id').filter((e) => e.includes(':source-updated'));
+  // events are maps: match each as a set of fields, whatever their order;
+  // a source's update is [:node-set "src" {:updated {:change … :concepts […]}}]
+  const evs = (await log()).split('{:ev/id').filter((e) => e.includes(':updated {'));
   check(evs.some((e) => /"src-sql-book"/.test(e) && /:change :material/.test(e) && /:concepts \["group-by"\]/.test(e)),
     'material is recorded for that one topic, against the OLD source');
   check(evs.some((e) => /"src-sql-book"/.test(e) && /:change :patch/.test(e) && e.includes('"' + patchedId + '"')), 'patch is recorded too — the decision is kept');
@@ -107,7 +108,7 @@ fs.writeFileSync(other, '# Посторонний\n\nТекст.\n');
   check(/Документация PostgreSQL 16/.test(await text('.card-version')), 'a similarly named document is asked about too');
   await page.click('.card-version .version-no'); await sleep(400);
   check((await page.$$eval('.card-reversion', (els) => els.length)) === before, '«separate document» lays out no cards');
-  check(!(await log()).split('{:ev/id').some((e) => e.includes(':source-updated') && e.includes('"src-pg-docs"')), 'and records no change to the other source');
+  check(!(await log()).split('{:ev/id').some((e) => e.includes(':updated {') && e.includes('"src-pg-docs"')), 'and records no change to the other source');
 
   for (const [f, name] of [[de3, 'Fassung 3 '], [fin, 'final_']]) {
     await upload(f);
@@ -129,7 +130,7 @@ fs.writeFileSync(other, '# Посторонний\n\nТекст.\n');
   check(/В этой беседе есть неразобранные предложения для графа «[^»]+»/.test(await text('.chat .msgs')), 'attaching a file there is refused, pointing at «Открыть граф» or a new conversation');
   check(await page.$('.card-foreign') !== null && await page.$eval('.card-reversion .reversion-material', (b) => b.disabled),
     'and the other graph\'s cards stay unacceptable here');
-  check(!/:source-added/.test(await page.evaluate(() => loretileLog())), 'nothing was written into the new graph');
+  check(!/:is :source/.test(await page.evaluate(() => loretileLog())), 'nothing was written into the new graph');
 
   await browser.close();
   fs.rmSync(dir, { recursive: true, force: true });

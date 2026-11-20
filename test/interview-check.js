@@ -106,7 +106,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   const oid = (reg.match(/:id "([^"]+)", :title "Онтология: Как работает магазин", :ontology "ontology"/) || [])[1];
   check(!!oid, 'the questions became an ontology graph «Онтология: Как работает магазин»');
   const olog = await page.evaluate((id) => loretileLog(id), oid || '');
-  check((olog.match(/:cq-raised/g) || []).length === 3, 'with one competency question per accepted card, raised there');
+  check((olog.match(/:is :cq\b/g) || []).length === 3, 'with one competency question per accepted card, raised there');
   check(!/:costs/.test(olog), 'the discarded question left no relation behind');
   check(/:inverse\? true/.test(olog), 'a question asked from the receiving end is checked from there');
   const hlog = await page.evaluate(() => loretileLog());

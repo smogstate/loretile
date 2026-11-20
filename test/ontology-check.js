@@ -56,7 +56,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   check(await nodes() === 0, 'a graph from the ontology opened empty');
   check(await page.$('.error') === null, 'and the file was accepted');
   const log = await page.evaluate(() => loretileLog());
-  check(/:profile-set/.test(log), 'the profile is the first event of its log');
+  check(/:graph-set \{:ontology "o-[^"]+", [^\n]*:ontology-copy/.test(log), 'its log binds the ontology by a copy (a graph property)');
   check(await page.$('.hats') === null, 'no learner hat on a graph with nothing to learn');
 
   // typed nodes
@@ -84,7 +84,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     `role → process offers performs/owns only (${offered.join(', ')})`);
   await page.evaluate(() => [...document.querySelectorAll('.modal .edge-btn')].find((b) => /выполняет/.test(b.textContent)).click());
   await sleep(400);
-  check(/:type :performs/.test(await page.evaluate(() => loretileLog())), 'the edge was written in the ontology\'s relation');
+  check(/:edge-set "[^"]+" :performs "/.test(await page.evaluate(() => loretileLog())), 'the edge was written in the ontology\'s relation');
 
   // the popup reads the relation back with its inverse label, no questions section
   await (await nodeByTitle(/Выставление/)).click(); await sleep(250);
@@ -114,29 +114,16 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   const cq = await page.$eval('.cq-row', (e) => e.textContent);
   check(/отвечено 1 из 2/.test(cq), `the question is checked over the graph (${cq})`);
   check(/пробелы: .*Оформление заказа/.test(cq), 'and names the process with no performer as the gap');
-  check(/:cq-raised/.test(await page.evaluate(() => loretileLog())), 'the question is in the log');
+  check(/:node-set "[^"]+" \{[^\n]*:is :cq/.test(await page.evaluate(() => loretileLog())), 'the question is in the log');
   const relRows = await page.$$eval('table.onto tr', (rows) => rows.map((r) => r.textContent));
   check(relRows.some((r) => /triggers/.test(r) && /ни один вопрос не требует/.test(r)), 'a relation no question needs is marked');
   check(!relRows.some((r) => /performs/.test(r) && /ни один вопрос не требует/.test(r)), 'the one a question needs is not');
 
-  // the ontology grows additively: a node type, then a relation using it
-  const ntInputs = await page.$$('.node-type-form input:not([type=color])');
-  // (metric and measures already exist in business.edn — the guard refuses duplicates)
-  await ntInputs[0].type('team'); await ntInputs[1].type('команда');
-  await page.click('.node-type-form .node-type-add');
-  await sleep(300);
-  check(/команда/.test(await page.$eval('.ontology-page', (e) => e.textContent)), 'a node type joined the ontology');
-  const relInputs = await page.$$('.relation-form input:not([type=checkbox])');
-  await relInputs[0].type('staffs'); await relInputs[1].type('укомплектовывает'); await relInputs[2].type('укомплектована');
-  const relSelects = await page.$$('.relation-form select');
-  await relSelects[0].select('team'); await relSelects[1].select('process');
-  await page.click('.relation-form .relation-add');
-  await sleep(300);
-  check(/staffs/.test(await page.$eval('.ontology-page', (e) => e.textContent)), 'a relation joined the ontology');
-  check(await page.$('.error') === null, `without a guard error (${await page.$eval('.error', (e) => e.textContent).catch(() => '')})`);
+  // growing the vocabulary from this page is gone (2026-11-20): a bound graph's
+  // vocabulary is edited in its ontology graph (ontology-graph-check covers it)
 
   // the gap link opens the node, whose panel names its unanswered question
-  // (by script: the «relation added» snack can sit over the link)
+  // (by script: a snack can sit over the link)
   await page.evaluate(() => document.querySelector('.cq-row a').click());
   await sleep(700);
   check(/Кто выполняет процесс/.test(await page.$eval('.gpopup .node-gaps', (e) => e.textContent).catch(() => '')),

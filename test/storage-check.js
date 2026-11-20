@@ -147,6 +147,30 @@ fs.writeFileSync(DOC, '# Notes\nA short note about joins.\n');
   const usage = await ls('loretile-llm-usage');
   check(/:tokens (\d+)/.test(usage) && +usage.match(/:tokens (\d+)/)[1] >= 3 * 40, 'A11: and the unrecorded spending was counted: ' + usage);
 
+  // --- the old event format (2026-11-20): no compatibility — set aside, never lost ---
+  {
+    const ctx = await browser.createBrowserContext();
+    const q = await ctx.newPage();
+    q.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
+    await q.evaluateOnNewDocument(() => {
+      if (sessionStorage.getItem('s')) return; sessionStorage.setItem('s', '1');
+      localStorage.clear(); localStorage.setItem('loretile-locale', 'ru');
+      for (const k of ['loretile-tour-done', 'loretile-chat-tour-done', 'loretile-learn-tour-done']) localStorage.setItem(k, '1');
+      localStorage.setItem('loretile-graphs', '[{:id "old" :title "Старый граф"} {:id "new" :title "Новый граф"}]');
+      localStorage.setItem('loretile-graph', '"old"');
+      localStorage.setItem('loretile-kg-log', '[{:ev/id "a" :ev/ns "old" :ev/actor "x" :ev/ts 1 :ev/type :concept-accepted :concept {:id "t" :title "T" :definition ""}}]');
+      localStorage.setItem('loretile-kg-log:new', '[{:ev/id "b" :ev/ns "new" :ev/actor "x" :ev/ts 1 :ev/type :change :ops [[:node-set "n" {:title "Узел"}]]}]');
+    });
+    await q.goto(BASE, { waitUntil: 'networkidle0' }); await sleep(1000);
+    check(/старом формате: 1/.test(await q.$eval('div.error', (e) => e.textContent).catch(() => '')), 'OLD FORMAT: the banner says a graph was set aside');
+    check(!/Старый граф/.test(await q.evaluate(() => localStorage.getItem('loretile-graphs'))), 'and it left the graph list');
+    const aside = await q.evaluate(() => new Promise((ok) => { const r = indexedDB.open('loretile'); r.onsuccess = () => { const t = r.result.transaction('aside').objectStore('aside').getAllKeys(); t.onsuccess = () => ok(t.result); }; }));
+    check(aside.includes('old'), 'kept whole in the aside store, not deleted');
+    check((await q.$$eval('.node', (ns) => ns.length)) === 1 && /Узел/.test(await q.evaluate(() => loretileLog())),
+      'the graph opened instead shows its own log — the set-aside one\'s empty copy is not saved over it');
+    await ctx.close();
+  }
+
   await browser.close();
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(failures ? 'STORAGE CHECK FAILED' : 'STORAGE CHECK OK');

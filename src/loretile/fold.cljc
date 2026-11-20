@@ -62,27 +62,7 @@
       {:error :relation-misfit :detail [from to type]}
       :else nil)))
 
-(defn- split-problem
-  "Why a concept-split would damage the graph, or nil."
-  [kg {:keys [id into item-remap object-remap]}]
-  (let [ids (map :id into)
-        targets (set ids)
-        p (:profile kg)
-        own-items (keep (fn [[iid i]] (when (= id (:primary-concept-id i)) iid)) (:items kg))
-        own-objects (keep (fn [[oid o]] (when (= id (:concept-id o)) oid)) (:objects kg))]
-    (cond
-      (< (count into) 2) :fewer-than-two
-      (not= (count ids) (count (distinct ids))) :duplicate-ids
-      (some #(and (not= id %) (contains? (:concepts kg) %)) ids) :id-taken
-      (some #(str/blank? (:title %)) into) :blank-title
-      (and (not (profile/learning? p)) (some #(nil? (profile/node-type-of p (:kind %))) into)) :unknown-node-type
-      (some #(not (targets (get item-remap %))) own-items) :item-unassigned
-      (some #(not (targets (get object-remap %))) own-objects) :object-unassigned
-      :else nil)))
-
 ;; --- the ontology as its own graph (wiki/Ontology-Graph.md) -----------------
-
-(def ^:private vocabulary-events #{:profile-set :node-type-added :relation-added :vocabulary-described})
 
 (defn sync-breaks
   "What a new copy of the ontology would leave without meaning in this data
@@ -111,15 +91,17 @@
 ;; `:ontology-copy`. No kind of graph is special (Denis 2026-11-19).
 (def types-ontology "ontology")
 
+(declare vocabulary)
+
 (def ^:private managed
   "What the fold keeps itself and no op may set."
-  #{:id :status :version :changed-by :changed-at :added-by :stale?})
+  #{:id :version :changed-by :changed-at :added-by :stale?})
 
 (def node-core
   "A node's keys that are not free properties: the fold's own, the words the
    panel shows, and the style (shown as controls)."
   #{:id :title :definition :kind :status :version :changed-by :changed-at :added-by
-    :stale? :tags :evidence :source-id :color :icon :learnable?})
+    :stale? :tags :evidence :source-id :color :icon :learnable? :is :provenance})
 
 (def edge-core
   "An edge's keys that are not free properties: its identity, provenance and
@@ -141,325 +123,35 @@
 
 (defn- same-edge? [[from type to]] #(= [from type to] [(:from %) (:type %) (:to %)]))
 
-(defn- apply-op
-  "One operation of a `change` event, applied mechanically: the same for
-   every graph. Readers give the properties their meaning."
-  [kg [op a b c d] e]
-  (let [stamp #(assoc % :changed-by (:ev/actor e) :changed-at (:ev/ts e))]
-    (case op
-      :graph-set
-      (let [g (merge-props (:graph kg) a)
-            kg (assoc kg :graph g :ontology-graph? (= types-ontology (:ontology g)))]
-        (cond
-          (not (or (contains? a :ontology) (contains? a :ontology-copy))) kg
-          (:ontology-copy g)
-          (-> kg
-              (assoc :profile (profile/normalize (:ontology-copy g))
-                     :ontology {:graph (:ontology g) :version (:ontology-version g)})
-              ;; the ontology's competency questions travel in the copy and are
-              ;; checked HERE, over this graph's data; the graph's own stay
-              (update :cqs (fn [cs] (merge (into {} (remove (comp :inherited? val)) cs)
-                                           (into {} (for [{:keys [id] :as q} (:ontology-cqs g)]
-                                                      [id (assoc (dissoc q :id) :inherited? true)]))))))
-          :else (-> kg (dissoc :profile :ontology)
-                    (update :cqs (fn [cs] (into {} (remove (comp :inherited? val)) cs))))))
-      :node-set
-      (update-in kg [:concepts a]
-                 (fn [n] (stamp (merge-props (or n {:id a :title a :definition "" :status :accepted :version 1
-                                                    :added-by (:ev/actor e)})
-                                             (apply dissoc b managed)))))
-      :node-remove
-      (-> kg (update :concepts dissoc a)
-          (update :edges (fn [es] (set (remove #(or (= a (:from %)) (= a (:to %))) es)))))
-      :edge-set
-      (let [same? (same-edge? [a b c])
-            old (first (filter same? (:edges kg)))]
-        (update kg :edges (fn [es] (conj (set (remove same? es))
-                                          (stamp (merge-props (or old {:from a :type b :to c :provenance :authored})
-                                                              (dissoc d :from :to :type :changed-by :changed-at)))))))
-      :edge-remove
-      (update kg :edges (fn [es] (set (remove (same-edge? [a b c]) es)))))))
+;; --- classes (the learning slice, 2026-11-20) -----------------------------------
+;; Every write is a `change`. A node's `:is` says what the fold FILES it as —
+;; absent = an ordinary node (a topic in learning) — so the folded graph keeps
+;; one map per class and every reader goes on reading :objects, :items … A
+;; node never changes class. A node's lifecycle is its `:status`.
 
-(defn- op-problem
-  "Why one op may not apply to the graph as it stands, or nil. Structure for
-   every graph; conformance to the ontology in a data graph only — an
-   ontology graph's edges ARE its relations (no usage checks there, Denis
-   2026-11-19)."
-  [kg [op a b c d] & [migration?]]
-  (let [;; a MIGRATION (a change carrying a new ontology copy) is judged whole,
-        ;; at its end — op by op only structure counts
-        onto? (or (:ontology-graph? kg) migration?)
-        p (:profile kg)
-        custom? (and p (not (profile/learning? p)))]
-    (case op
-      :graph-set
-      (let [g (merge-props (:graph kg) a)]
-        (when (and (not migration?) (contains? a :ontology-copy) (:ontology-copy g))
-          (let [v (profile/normalize (:ontology-copy g))]
-            (cond (profile/problems v) {:error :bad-profile :detail (profile/problems v)}
-                  (sync-breaks kg v) {:error :ontology-breaks-data :detail (sync-breaks kg v)}))))
-      :node-set
-      (let [kind (if (contains? b :kind) (:kind b) (get-in kg [:concepts a :kind]))]
-        (cond
-          (some managed (keys b)) {:error :invalid-schema :detail {:node [(str "managed: " (pr-str (filterv managed (keys b))))]}}
-          (and (not onto?) custom? (nil? (profile/node-type-of p kind))) {:error :unknown-node-type :detail kind}))
-      :node-remove
-      (cond (not (contains? (:concepts kg) a)) {:error :missing :detail a}
-            (some (fn [crs] (some #(= a (first %)) (:targets crs))) (vals (:courses kg))) {:error :in-course :detail a})
-      :edge-set
-      (let [new? (not-any? (same-edge? [a b c]) (:edges kg))
-            bad (when (and new? (not onto?)) (bad-edge-for-profile kg {:from a :to c :type b}))]
-        (cond
-          (not (and (contains? (:concepts kg) a) (contains? (:concepts kg) c))) {:error :missing-endpoint :detail [a c b]}
-          bad bad
-          (and new? (not onto?) (profile/acyclic? p b) (cycle? kg b a c)) {:error :requires-cycle :detail [a c b]}))
-      :edge-remove
-      (when (not-any? (same-edge? [a b c]) (:edges kg)) {:error :missing :detail [a c b]}))))
+(def ^:private class-map
+  {nil :concepts :object :objects :item :items :source :sources
+   :question :questions :course :courses :cq :cqs})
 
-;; --- undo (2026-11-20): an edit is never erased, it is reversed ---------------
-;; The log is append-only, so an undo is a NEW `change` whose ops put back
-;; what an event changed, computed from the graph as it stood BEFORE it.
-;; Covers the property-graph ops and the editor's own events; learning
-;; material (objects, items, courses) waits for the learning migration.
+(def ^:private class-of (assoc (zipmap (vals class-map) (keys class-map)) :proposals nil))
 
-(defn restore-node-ops
-  "Ops that bring node `id` back as it stood in `kg`, with its links (a
-   link to a SOURCE is not a node edge and is not restored)."
+(def ^:private statuses
+  {:concepts #{:proposed :accepted :deprecated}
+   :objects #{:active :demoted}
+   :items #{:draft :active :retired}})
+
+(def ^:private filed [:concepts :proposals :objects :items :sources :questions :courses :cqs])
+
+(defn node-at
+  "Where node `id` is filed and what it holds: [map-key node], or nil."
   [kg id]
-  (when-let [c (get-in kg [:concepts id])]
-    (into [[:node-set id (apply dissoc c managed)]]
-          (for [e (:edges kg)
-                :when (and (or (= id (:from e)) (= id (:to e))) (not= :grounded-in (:type e))
-                           (get-in kg [:concepts (if (= id (:from e)) (:to e) (:from e))]))]
-            [:edge-set (:from e) (:type e) (:to e) (dissoc e :from :to :type :changed-by :changed-at)]))))
+  (some (fn [k] (when-let [n (get-in kg [k id])] [k n])) filed))
 
-(defn- inverse-op
-  "The ops that undo one op, read off the graph just before it."
-  [kg [op a b c d]]
-  (case op
-    :graph-set [[:graph-set (into {} (for [k (keys a)] [k (get-in kg [:graph k])]))]]
-    :node-set (if-let [n (get-in kg [:concepts a])]
-                [[:node-set a (into {} (for [k (keys (apply dissoc b managed))] [k (get n k)]))]]
-                [[:node-remove a]])
-    :node-remove (restore-node-ops kg a)
-    :edge-set (if-let [old (first (filter (same-edge? [a b c]) (:edges kg)))]
-                [[:edge-set a b c (into {} (for [k (keys (dissoc d :from :to :type))] [k (get old k)]))]]
-                [[:edge-remove a b c]])
-    :edge-remove (when-let [old (first (filter (same-edge? [a b c]) (:edges kg)))]
-                   [[:edge-set a b c (dissoc old :from :to :type :changed-by :changed-at)]])))
-
-(defn undoable?
-  "Is `e` an edit undo covers? Cheap — read off its type, no fold."
-  [e]
-  (or (#{:change :concept-accepted :concept-discarded :edge-accepted :edge-discarded} (:ev/type e))
-      (and (= :version-created (:ev/type e)) (= :concept (:entity e)))))
-
-(defn undo-ops
-  "The ops of a `change` that reverses event `e`, given the graph as it
-   stood before `e`; nil when `e` is not an edit undo covers."
-  [kg-before e]
-  (let [edge-ops (fn [{:keys [from to type]}] [from type to])]
-    (case (:ev/type e)
-      :change (loop [k kg-before [o & more] (:ops e) inv ()]
-                (if o
-                  (recur (apply-op k o e) more (concat (inverse-op k o) inv))
-                  (not-empty (vec inv))))
-      :concept-accepted [[:node-remove (get-in e [:concept :id])]]
-      :concept-discarded (restore-node-ops kg-before (:id e))
-      :edge-accepted [(into [:edge-remove] (edge-ops (:edge e)))]
-      :edge-discarded (let [[f t to] (edge-ops (:edge e))]
-                        (when-let [old (first (filter (same-edge? [f t to]) (:edges kg-before)))]
-                          [[:edge-set f t to (dissoc old :from :to :type :changed-by :changed-at)]]))
-      :version-created (when (= :concept (:entity e))
-                         (when-let [n (get-in kg-before [:concepts (:id e)])]
-                           [[:node-set (:id e) (into {} (for [k (keys (apply dissoc (:payload e) managed))] [k (get n k)]))]]))
-      nil)))
-
-(declare vocabulary)
-
-(defn- change-problem
-  "The first op that may not apply, or — in an ontology graph — a vocabulary
-   the result would leave unsound (a reserved id, a second ordering
-   relation): the copy into the graphs that use it could never be taken."
-  [kg ops]
-  (let [migration? (and (not (:ontology-graph? kg))
-                        (some (fn [[op a]] (and (= :graph-set op) (contains? a :ontology-copy) (:ontology-copy a))) ops))]
-    (loop [k kg [o & more] ops]
-      (if o
-        (or (op-problem k o migration?) (recur (apply-op k o {}) more))
-        (cond
-          (:ontology-graph? k)
-          (when-let [why (profile/draft-problems (vocabulary k))]
-            {:error :bad-profile :detail why})
-          ;; a migration (2026-11-20): the new copy and the retyped data,
-          ;; judged together — whole, nothing left without meaning, every
-          ;; edge fitting its relation
-          migration?
-          (let [p (:profile k)
-                kind-of #(get-in k [:concepts % :kind])]
-            (cond
-              (profile/problems p) {:error :bad-profile :detail (profile/problems p)}
-              (sync-breaks k p) {:error :ontology-breaks-data :detail (sync-breaks k p)}
-              :else (when-let [e (first (filter #(and (not= :grounded-in (:type %))
-                                                      (not (profile/fits? p (:type %) (kind-of (:from %)) (kind-of (:to %)))))
-                                                (:edges k)))]
-                      {:error :relation-misfit :detail [(:from e) (:to e) (:type e)]}))))))))
-
-(defn guard
-  "nil when event may be appended, else {:error ...}."
-  [kg e]
-  (cond
-    (not (schema/valid? e)) {:error :invalid-schema :detail (schema/explain e)}
-    ;; the property-graph core: every op checked in order on the graph as it
-    ;; would stand, the whole event refused at the first problem
-    (= :change (:ev/type e)) (change-problem kg (:ops e))
-    ;; a bound graph's vocabulary is edited in its ontology graph, never here:
-    ;; a local addition would be lost — or block — at the next copy
-    (and (:ontology kg) (vocabulary-events (:ev/type e)))
-    {:error :ontology-elsewhere :detail (get-in kg [:ontology :graph])}
-    ;; the ontology is chosen for an EMPTY graph, once: a vocabulary is the
-    ;; meaning of every edge in the log, so it cannot change under them
-    (and (= :profile-set (:ev/type e))
-         (or (seq (:concepts kg)) (seq (:edges kg)) (seq (:proposals kg)) (some? (:profile kg))))
-    {:error :profile-locked}
-    ;; the rules are checked on the profile the fold will STORE: one whose
-    ;; only ordering relation was grounded-in passed raw and lost it in
-    ;; normalisation (review 2026-10-16)
-    (and (= :profile-set (:ev/type e))
-         (or (profile/problems (:profile e)) (profile/problems (profile/normalize (:profile e)))))
-    {:error :bad-profile :detail (or (profile/problems (:profile e)) (profile/problems (profile/normalize (:profile e))))}
-    ;; the ontology grows additively, in a custom profile only
-    (and (#{:relation-added :node-type-added} (:ev/type e)) (profile/learning? (:profile kg)))
-    {:error :profile-locked}
-    (and (= :relation-added (:ev/type e))
-         (vocabulary-problems kg (update (:profile kg) :relations conj (:relation e))))
-    {:error :bad-profile :detail (vocabulary-problems kg (update (:profile kg) :relations conj (:relation e)))}
-    (and (= :node-type-added (:ev/type e))
-         (vocabulary-problems kg (update (:profile kg) :node-types conj (:node-type e))))
-    {:error :bad-profile :detail (vocabulary-problems kg (update (:profile kg) :node-types conj (:node-type e)))}
-    ;; words on the vocabulary: a custom profile's own types and relations
-    (and (= :vocabulary-described (:ev/type e)) (profile/learning? (:profile kg)))
-    {:error :profile-locked}
-    (and (= :vocabulary-described (:ev/type e))
-         (let [{:keys [of id]} e
-               x (if (= :relation of) (profile/relation (:profile kg) id) (profile/node-type-of (:profile kg) id))]
-           (or (nil? x) (:reserved? x))))
-    {:error (if (= :relation (:of e)) :unknown-relation :unknown-node-type) :detail (:id e)}
-    (and (= :author-named (:ev/type e))
-         (or (not= (get-in e [:author :id]) (:ev/actor e)) (str/blank? (get-in e [:author :name]))))
-    {:error :invalid-schema :detail {:author ["an author names only themself"]}}
-    (and (= :graph-owner-set (:ev/type e)) (str/blank? (get-in e [:owner :team])))
-    {:error :invalid-schema :detail {:owner {:team ["a team is named"]}}}
-    ;; a competency question's pattern names a relation (and a type) of the profile
-    (and (= :cq-raised (:ev/type e))
-         (let [{:keys [relation from-type]} (get-in e [:cq :pattern])
-               ;; an ontology graph asks its questions of its OWN vocabulary
-               p (if (:ontology-graph? kg) (vocabulary kg) (:profile kg))]
-           (and relation
-                (or (nil? (profile/relation p relation))
-                    (and from-type (nil? (profile/node-type-of p from-type)))))))
-    {:error :unknown-relation :detail (get-in e [:cq :pattern])}
-    (and (= :cq-retired (:ev/type e)) (get-in kg [:cqs (:id e) :inherited?]))
-    {:error :ontology-elsewhere :detail (get-in kg [:ontology :graph])}
-    ;; the same question twice is one question (business dogfood 2026-10-15:
-    ;; a restored pile re-accepted every card and the graph asked each twice)
-    (and (= :cq-raised (:ev/type e))
-         (let [norm #(-> (str %) str/lower-case str/trim (str/replace #"\s+" " "))
-               q (norm (get-in e [:cq :question]))]
-           (some #(= q (norm (:question %))) (vals (:cqs kg)))))
-    {:error :duplicate :detail (get-in e [:cq :question])}
-    ;; a custom profile names its node types: a topic must be one of them
-    (and (#{:concept-accepted :concept-proposed} (:ev/type e))
-         (not (profile/learning? (:profile kg)))
-         (not (profile/node-type-of (:profile kg) (get-in e [:concept :kind]))))
-    {:error :unknown-node-type :detail (get-in e [:concept :kind])}
-    (and (#{:edge-accepted :edge-proposed} (:ev/type e))
-         (not (:ontology-graph? kg))
-         (bad-edge-for-profile kg (:edge e)))
-    (bad-edge-for-profile kg (:edge e))
-    ;; no dangling edges: accepted edges join accepted concepts (grounded-in
-    ;; may point at a source); proposed edges may join pending proposals
-    (and (= :edge-accepted (:ev/type e))
-         (let [{:keys [from to type]} (:edge e)]
-           (not (and (contains? (:concepts kg) from)
-                     (or (contains? (:concepts kg) to)
-                         (and (= :grounded-in type) (contains? (:sources kg) to)))))))
-    {:error :missing-endpoint :detail (edge-key (:edge e))}
-    (and (= :edge-proposed (:ev/type e))
-         (let [known? #(or (contains? (:concepts kg) %) (contains? (:proposals kg) %))
-               {:keys [from to]} (:edge e)]
-           (not (and (known? from) (known? to)))))
-    {:error :missing-endpoint :detail (edge-key (:edge e))}
-    ;; an existing concept is edited via version-created, never re-accepted
-    (and (= :concept-accepted (:ev/type e))
-         (contains? (:concepts kg) (get-in e [:concept :id])))
-    {:error :exists :detail (get-in e [:concept :id])}
-    ;; every acyclic relation of the profile stays a DAG (`requires` in learning)
-    (and (= :edge-accepted (:ev/type e))
-         (not (:ontology-graph? kg))
-         (profile/acyclic? (:profile kg) (get-in e [:edge :type]))
-         (cycle? kg (get-in e [:edge :type]) (get-in e [:edge :from]) (get-in e [:edge :to])))
-    {:error :requires-cycle :detail (edge-key (:edge e))}
-    ;; the four events the UI writes since 2026-10-14 (the loretile graph's
-    ;; check-cqs found them written by nothing): each needs its subject
-    (and (#{:concept-deprecated :concept-split} (:ev/type e))
-         (not (contains? (:concepts kg) (:id e))))
-    {:error :missing :detail (:id e)}
-    (and (= :object-promoted (:ev/type e))
-         (not= :demoted (get-in kg [:objects (:id e) :status])))
-    {:error :missing :detail (:id e)}
-    ;; every event about an entity needs the entity: these made records from
-    ;; nothing (review 2026-10-16 A16)
-    (and (#{:item-accepted :item-retired} (:ev/type e)) (not (contains? (:items kg) (:id e))))
-    {:error :missing :detail (:id e)}
-    (and (= :object-demoted (:ev/type e)) (not (contains? (:objects kg) (:id e))))
-    {:error :missing :detail (:id e)}
-    (and (= :version-created (:ev/type e))
-         (not (get-in kg [({:object :objects :item :items :concept :concepts} (:entity e)) (:id e)])))
-    {:error :missing :detail (:id e)}
-    (and (= :source-updated (:ev/type e)) (not (contains? (:sources kg) (:id e))))
-    {:error :missing :detail (:id e)}
-    ;; one edge per key: a pair drawn by hand and accepted again from the pile
-    ;; drew two lines and exported twice (A17)
-    (and (= :edge-accepted (:ev/type e))
-         (let [k (edge-key (:edge e))] (some #(= k (edge-key %)) (:edges kg))))
-    {:error :duplicate :detail (edge-key (:edge e))}
-    (and (= :question-answered (:ev/type e))
-         (or (not (contains? (:questions kg) (:id e))) (str/blank? (:answer e))))
-    {:error :missing :detail (:id e)}
-    ;; a split may not orphan anything: every item and object of the topic
-    ;; (any status) goes to one of the new topics, which are ≥2, distinct,
-    ;; new to the graph (the old id may be reused), of a known node type
-    (and (= :concept-split (:ev/type e)) (split-problem kg e))
-    {:error :bad-split :detail (split-problem kg e)}
-    ;; a topic a course targets cannot vanish under its learners
-    (and (#{:concept-discarded :concept-split} (:ev/type e))
-         (some (fn [c] (some #(= (:id e) (first %)) (:targets c))) (vals (:courses kg))))
-    {:error :in-course :detail (:id e)}
-    ;; an object link joins two existing objects of ONE topic, never itself
-    (and (= :object-linked (:ev/type e))
-         (let [{:keys [from to]} (:link e) a (get-in kg [:objects from]) b (get-in kg [:objects to])]
-           (not (and a b (not= from to) (= (:concept-id a) (:concept-id b))))))
-    {:error :bad-object-link :detail (:link e)}
-    (and (= :concept-proposed (:ev/type e))
-         (contains? (:discarded kg) (get-in e [:concept :id])))
-    {:error :was-discarded :detail (get-in e [:concept :id])}
-    ;; the slug/edge-key IS the canonical proposal hash — re-ingesting the
-    ;; same material must not re-propose what already exists or is pending
-    (and (= :concept-proposed (:ev/type e))
-         (let [id (get-in e [:concept :id])]
-           (or (contains? (:concepts kg) id) (contains? (:proposals kg) id))))
-    {:error :duplicate :detail (get-in e [:concept :id])}
-    (and (= :edge-proposed (:ev/type e))
-         (let [k (edge-key (:edge e))]
-           (or (contains? (:proposals kg) k)
-               (contains? (:discarded kg) k)
-               (some #(= k (edge-key %)) (:edges kg)))))
-    {:error :duplicate :detail (edge-key (:edge e))}
-    :else nil))
-
-;; ---------------------------------------------------------------------------
-;; the fold
+(defn material-ids
+  "The ids of a topic's objects and items — removed with it."
+  [kg id]
+  (concat (keep (fn [[oid o]] (when (= id (:concept-id o)) oid)) (:objects kg))
+          (keep (fn [[iid i]] (when (= id (:primary-concept-id i)) iid)) (:items kg))))
 
 (defn- material-stale
   "A material change on a source stales what was WRITTEN from it (decided
@@ -479,155 +171,355 @@
                                                                            (assoc :stale? true))))
                                               {} cs))))))
 
-(defmulti apply-event (fn [_kg e] (:ev/type e)))
-
-(defmethod apply-event :profile-set [kg {:keys [profile]}]
-  (assoc kg :profile (profile/normalize profile)))
-
-(defmethod apply-event :change [kg {:keys [ops] :as e}]
-  (reduce #(apply-op %1 %2 e) kg ops))
-
-(defmethod apply-event :relation-added [kg {:keys [relation]}]
-  (update-in kg [:profile :relations] conj (dissoc relation :reserved?)))
-
-(defmethod apply-event :node-type-added [kg {:keys [node-type]}]
-  (update-in kg [:profile :node-types] conj node-type))
-
-(defmethod apply-event :vocabulary-described [kg {:keys [of id description]}]
-  (let [d (str/trim description)]
-    (update-in kg [:profile (if (= :relation of) :relations :node-types)]
-               (fn [xs] (mapv #(if (= id (:id %)) (if (seq d) (assoc % :description d) (dissoc % :description)) %) xs)))))
-
-(defmethod apply-event :author-named [kg {:keys [author]}]
-  (assoc-in kg [:authors (:id author)] (str/trim (:name author))))
-
-(defn author-name
-  "Who an actor id is: the name the graph's log gives it, else the id
-   (old logs say «denis», the codebase graph «build.py»)."
-  [kg actor]
-  (or (get-in kg [:authors actor]) actor))
-
 (defn- touched
-  "A topic's authorship: who added it, who changed it last and when — its
-   definition, its version or its material."
+  "A topic's authorship: who changed it last and when — its words, its
+   version or its material."
   [kg cid e]
   (cond-> kg
     (and cid (get-in kg [:concepts cid]))
     (update-in [:concepts cid] assoc :changed-by (:ev/actor e) :changed-at (:ev/ts e))))
 
-(defmethod apply-event :graph-owner-set [kg {:keys [owner]}]
-  (assoc kg :owner (into {} (keep (fn [[k v]] (let [v (str/trim v)] (when (seq v) [k v])))) owner)))
+(defn- grounded
+  "The link to the document a node or an object was written from: a topic
+   drafted from a source, an object grounded in one — so a material update
+   of the source can flag what was written from it."
+  [kg cls id]
+  (let [n (get-in kg [(class-map cls) id])]
+    (case cls
+      nil (cond-> kg (:source-id n) (update :edges conj {:from id :to (:source-id n) :type :grounded-in :provenance :llm-drafted}))
+      :object (cond-> kg (:grounded-in n) (update :edges conj {:from (:concept-id n) :to (:grounded-in n) :type :grounded-in :provenance :authored}))
+      kg)))
 
-(defmethod apply-event :cq-raised [kg {:keys [cq]}]
-  (assoc-in kg [:cqs (:id cq)] (dissoc cq :id)))
+(defn- set-node
+  "One node-set: a proposal filed aside, a proposal accepted into the graph,
+   a new node of its class, or new properties on an existing one."
+  [kg a b e]
+  (let [stamp #(assoc % :changed-by (:ev/actor e) :changed-at (:ev/ts e))
+        [at n] (node-at kg a)
+        p (dissoc (apply dissoc b managed) :is :updated)
+        edit (:edit e)]
+    (cond
+      (and (nil? at) (nil? (:is b)) (= :proposed (:status b)))
+      (assoc-in kg [:proposals a] (assoc (dissoc p :status) :id a :of :concept))
 
-(defmethod apply-event :cq-retired [kg {:keys [id]}]
-  (update kg :cqs dissoc id))
+      (and (= :proposals at) (= :accepted (:status b)))
+      (-> kg (update :proposals dissoc a)
+          (assoc-in [:concepts a] (stamp (assoc (merge-props (dissoc n :of :provenance) (dissoc p :status))
+                                                :id a :status :accepted :version 1 :added-by (:ev/actor e))))
+          (grounded nil a))
 
-(defmethod apply-event :concept-proposed [kg {:keys [concept provenance]}]
-  (assoc-in kg [:proposals (:id concept)] (assoc concept :provenance provenance :of :concept)))
+      (= :proposals at) (update-in kg [:proposals a] merge-props (dissoc p :status))
 
-(defmethod apply-event :concept-accepted [kg {:keys [concept] :as e}]
-  (-> kg
-      (update :proposals dissoc (:id concept))
-      (assoc-in [:concepts (:id concept)] (assoc concept :status :accepted :version 1
-                                                 :added-by (:ev/actor e) :changed-by (:ev/actor e) :changed-at (:ev/ts e)))
-      ;; the intake chat's provenance: concept → the document it came from,
-      ;; so a material source update can flag it stale (wiki/Authoring.md step 1)
-      (cond-> (:source-id concept)
-        (update :edges conj {:from (:id concept) :to (:source-id concept)
-                             :type :grounded-in :provenance :llm-drafted}))))
+      (nil? at)
+      (let [cls (:is b)
+            k (class-map cls)
+            base (case k
+                   :concepts {:title a :definition "" :status :accepted :version 1 :added-by (:ev/actor e)}
+                   :objects {:status :active :version 1}
+                   :items {:status :draft :version 1}
+                   {})
+            node (cond-> (merge-props (assoc base :id a) p) (= :concepts k) stamp)]
+        (-> (assoc-in kg [k a] node)
+            (grounded cls a)
+            (cond-> (= :objects k) (touched (:concept-id node) e))))
 
-(defmethod apply-event :concept-discarded [kg {:keys [id]}]
-  ;; a proposal rejected, or an accepted topic removed by hand — with its edges
-  (-> kg (update :proposals dissoc id) (update :discarded conj id)
-      (update :concepts dissoc id)
-      (update :edges (fn [es] (set (remove #(or (= id (:from %)) (= id (:to %))) es))))))
+      :else
+      (let [content? (#{:concepts :objects :items} at)
+            kg (update-in kg [at a]
+                          #(cond-> (merge-props % p)
+                             (= :concepts at) stamp
+                             (and edit content?) (update :version (fnil inc 1))
+                             ;; an author who re-versions a stale object or topic has acted on it
+                             (and edit (#{:concepts :objects} at)) (dissoc :stale?)))
+            u (:updated b)]
+        (cond-> kg
+          (= :objects at) (touched (get-in kg [:objects a :concept-id]) e)
+          (and u (= :sources at)) (update-in [:sources a :version] (fnil inc 1))
+          (and u (= :sources at) (= :material (:change u))) (material-stale a (some-> (:concepts u) set)))))))
 
-(defmethod apply-event :concept-deprecated [kg {:keys [id]}]
-  (assoc-in kg [:concepts id :status] :deprecated))
+(defn- apply-op
+  "One operation of a `change` event, applied mechanically: the same for
+   every graph. Readers give the properties their meaning."
+  [kg [op a b c d] e]
+  (let [stamp #(assoc % :changed-by (:ev/actor e) :changed-at (:ev/ts e))]
+    (case op
+      :graph-set
+      (let [;; authors MERGE: each names only themself
+            a (cond-> a (contains? a :authors) (update :authors #(merge-props (get-in kg [:graph :authors]) %)))
+            g (merge-props (:graph kg) a)
+            kg (cond-> (assoc kg :graph g :ontology-graph? (= types-ontology (:ontology g)))
+                 (contains? a :authors) (assoc :authors (or (:authors g) {}))
+                 (contains? a :owner) (assoc :owner (:owner g)))]
+        (cond
+          (not (or (contains? a :ontology) (contains? a :ontology-copy))) kg
+          (:ontology-copy g)
+          (-> kg
+              (assoc :profile (profile/normalize (:ontology-copy g))
+                     :ontology {:graph (:ontology g) :version (:ontology-version g)})
+              ;; the ontology's competency questions travel in the copy and are
+              ;; checked HERE, over this graph's data; the graph's own stay
+              (update :cqs (fn [cs] (merge (into {} (remove (comp :inherited? val)) cs)
+                                           (into {} (for [{:keys [id] :as q} (:ontology-cqs g)]
+                                                      [id (assoc (dissoc q :id) :inherited? true)]))))))
+          :else (-> kg (dissoc :profile :ontology)
+                    (update :cqs (fn [cs] (into {} (remove (comp :inherited? val)) cs))))))
+      :node-set (set-node kg a b e)
+      :node-remove
+      (let [[at _] (node-at kg a)]
+        (case at
+          :concepts (-> kg (update :concepts dissoc a) (update :discarded conj a)
+                        (update :edges (fn [es] (set (remove #(or (= a (:from %)) (= a (:to %))) es)))))
+          :proposals (-> kg (update :proposals dissoc a) (update :discarded conj a))
+          :objects (-> kg (update :objects dissoc a)
+                       (update :object-links (fn [ls] (set (remove #(or (= a (:from %)) (= a (:to %))) ls)))))
+          nil kg
+          (update kg at dissoc a)))
+      :edge-set
+      (let [k [a c b]
+            same? (same-edge? [a b c])
+            old (first (filter same? (:edges kg)))
+            w (dissoc d :from :to :type :changed-by :changed-at :status)]
+        (cond
+          (and (get-in kg [:objects a]) (get-in kg [:objects c]))
+          (update kg :object-links (fnil conj #{}) {:from a :to c :type b})
+          (and (= :proposed (:status d)) (nil? old))
+          (assoc-in kg [:proposals k] (merge-props (merge (get-in kg [:proposals k]) {:from a :to c :type b :of :edge}) w))
+          (contains? (:proposals kg) k)
+          (-> kg (update :proposals dissoc k)
+              (update :edges conj (stamp (merge-props (dissoc (get-in kg [:proposals k]) :of) w))))
+          :else
+          (update kg :edges (fn [es] (conj (set (remove same? es))
+                                            (stamp (merge-props (or old {:from a :type b :to c :provenance :authored}) w)))))))
+      :edge-remove
+      (let [k [a c b] link {:from a :to c :type b}]
+        (cond
+          (contains? (:object-links kg) link) (update kg :object-links disj link)
+          (contains? (:proposals kg) k) (-> kg (update :proposals dissoc k) (update :discarded conj k))
+          :else (-> kg (update :edges (fn [es] (set (remove (same-edge? [a b c]) es))))
+                    (update :discarded conj k)))))))
 
-(defmethod apply-event :concept-split [kg {:keys [id into item-remap object-remap]}]
-  (let [kg (reduce (fn [g c] (assoc-in g [:concepts (:id c)]
-                                       (assoc c :status :accepted :version 1)))
-                   (update kg :concepts dissoc id) into)
-        kg (update kg :items
-                   (fn [items] (reduce-kv (fn [m iid item]
-                                            (assoc m iid
-                                                   (cond-> item
-                                                     (= id (:primary-concept-id item))
-                                                     (assoc :primary-concept-id (get item-remap iid)))))
-                                          {} items)))
-        kg (update kg :objects
-                   (fn [objs] (reduce-kv (fn [m oid o]
-                                           (assoc m oid
-                                                  (cond-> o
-                                                    (= id (:concept-id o))
-                                                    (assoc :concept-id (get object-remap oid)))))
-                                         {} objs)))]
-    ;; edges touching the split node are dropped; curator re-draws them
-    (update kg :edges (fn [es] (set (remove #(or (= id (:from %)) (= id (:to %))) es))))))
+(defn- op-problem
+  "Why one op may not apply to the graph as it stands, or nil. Structure for
+   every graph; conformance to the ontology in a data graph only — an
+   ontology graph's edges ARE its relations (no usage checks there, Denis
+   2026-11-19)."
+  [kg [op a b c d] e & [migration?]]
+  (let [;; a MIGRATION (a change carrying a new ontology copy) is judged whole,
+        ;; at its end — op by op only structure counts
+        onto? (or (:ontology-graph? kg) migration?)
+        p (:profile kg)
+        custom? (and p (not (profile/learning? p)))
+        [at n] (when (#{:node-set :node-remove} op) (node-at kg a))]
+    (case op
+      :graph-set
+      (let [g (merge-props (:graph kg) a)]
+        (cond
+          (and (not migration?) (contains? a :ontology-copy) (:ontology-copy g))
+          (let [v (profile/normalize (:ontology-copy g))]
+            (cond (profile/problems v) {:error :bad-profile :detail (profile/problems v)}
+                  (sync-breaks kg v) {:error :ontology-breaks-data :detail (sync-breaks kg v)}))
+          ;; an author names only themself
+          (and (contains? a :authors)
+               (or (not (map? (:authors a)))
+                   (some #(not= (:ev/actor e) %) (keys (:authors a)))
+                   (some #(str/blank? (str %)) (vals (:authors a)))))
+          {:error :invalid-schema :detail {:author ["an author names only themself"]}}
+          (and (contains? a :owner) (some? (:owner a)) (str/blank? (get-in a [:owner :team])))
+          {:error :invalid-schema :detail {:owner {:team ["a team is named"]}}}))
 
-(defmethod apply-event :edge-proposed [kg {:keys [edge]}]
-  (assoc-in kg [:proposals (edge-key edge)] (assoc edge :of :edge)))
+      :node-set
+      (let [cls (if at (class-of at) (:is b))
+            k (if at at (class-map (:is b)))
+            sk (if (= :proposals k) :concepts k)
+            kind (if (contains? b :kind) (:kind b) (:kind n))
+            merged (merge (when (not= :proposals at) n) (dissoc b :is :status :updated))]
+        (cond
+          (some managed (keys b)) {:error :invalid-schema :detail {:node [(str "managed: " (pr-str (filterv managed (keys b))))]}}
+          (and (contains? b :is) (not (contains? class-map (:is b)))) {:error :invalid-schema :detail {:is [(str "unknown class " (:is b))]}}
+          (and at (contains? b :is) (not= (:is b) cls)) {:error :invalid-schema :detail {:is ["a node does not change class"]}}
+          (and (:edit e) (nil? at)) {:error :missing :detail a}
+          ;; an op on an unknown id that names neither a class nor a title refers
+          ;; to nothing — a status for an item that is not there, an answer…
+          (and (nil? at) (nil? (:is b)) (not (contains? b :title))) {:error :missing :detail a}
+          (and (contains? b :status) (not (contains? (get statuses sk #{}) (:status b))))
+          {:error :invalid-schema :detail {:status [(str "not a status of this node: " (:status b))]}}
+          (and (contains? b :updated) (not= :sources at)) {:error :missing :detail a}
+          (and (contains? b :answer) (or (not= :questions at) (str/blank? (:answer b)))) {:error :missing :detail a}
+          ;; proposals: a slug IS the proposal's hash — never twice, never what was rejected
+          (and (= :proposed (:status b)) (#{:concepts :proposals} at)) {:error :duplicate :detail a}
+          (and (= :proposed (:status b)) (contains? (:discarded kg) a)) {:error :was-discarded :detail a}
+          (and (nil? at) (nil? cls) (str/blank? (str (:title b)))) {:error :invalid-schema :detail {:title ["a new node is named"]}}
+          ;; a custom ontology names its node types: a node of the graph is one of them
+          (and (nil? cls) (not onto?) custom? (nil? (profile/node-type-of p kind))) {:error :unknown-node-type :detail kind}
+          ;; learning material keeps its shape (an object about one topic, an item's spec…)
+          (and cls (schema/node-problem cls (assoc merged :id a))) {:error :invalid-schema :detail (schema/node-problem cls (assoc merged :id a))}
+          ;; a competency question asks of the vocabulary — an ontology graph of its OWN
+          (and (= :cq cls) (nil? at)
+               (let [{:keys [relation from-type]} (:pattern b)
+                     v (if (:ontology-graph? kg) (vocabulary kg) p)]
+                 (and relation (or (nil? (profile/relation v relation))
+                                   (and from-type (nil? (profile/node-type-of v from-type))))))) {:error :unknown-relation :detail (:pattern b)}
+          (and (= :cq cls) (nil? at)
+               (let [norm #(-> (str %) str/lower-case str/trim (str/replace #"\s+" " "))
+                     q (norm (:question b))]
+                 (some #(= q (norm (:question %))) (vals (:cqs kg))))) {:error :duplicate :detail (:question b)}
+          (and (= :cqs at) (:inherited? n)) {:error :ontology-elsewhere :detail (get-in kg [:ontology :graph])}))
 
-(defmethod apply-event :edge-accepted [kg {:keys [edge]}]
-  (-> kg (update :proposals dissoc (edge-key edge)) (update :edges conj edge)))
+      :node-remove
+      (cond (nil? at) {:error :missing :detail a}
+            (and (= :concepts at) (some (fn [crs] (some #(= a (first %)) (:targets crs))) (vals (:courses kg)))) {:error :in-course :detail a}
+            (and (= :cqs at) (:inherited? n)) {:error :ontology-elsewhere :detail (get-in kg [:ontology :graph])})
 
-(defmethod apply-event :edge-discarded [kg {:keys [edge]}]
-  (let [k (edge-key edge)]
-    (-> kg (update :proposals dissoc k) (update :discarded conj k)
-        (update :edges (fn [es] (set (remove #(= k (edge-key %)) es)))))))
+      :edge-set
+      (let [oa (get-in kg [:objects a]) oc (get-in kg [:objects c])
+            k [a c b]
+            new? (not-any? (same-edge? [a b c]) (:edges kg))
+            proposing? (and new? (= :proposed (:status d)))
+            known? #(or (contains? (:concepts kg) %) (contains? (:proposals kg) %))
+            bad (when (and new? (not onto?)) (bad-edge-for-profile kg {:from a :to c :type b}))]
+        (cond
+          (or oa oc)
+          (when-not (and oa oc (not= a c) (= (:concept-id oa) (:concept-id oc)) (schema/object-link-type? b))
+            {:error :bad-object-link :detail {:from a :to c :type b}})
+          (and (= :proposed (:status d)) (not new?)) {:error :duplicate :detail [a c b]}
+          proposing?
+          (cond (not (and (known? a) (known? c))) {:error :missing-endpoint :detail [a c b]}
+                (or (contains? (:proposals kg) k) (contains? (:discarded kg) k)) {:error :duplicate :detail [a c b]}
+                bad bad)
+          (not (and (contains? (:concepts kg) a)
+                    (or (contains? (:concepts kg) c) (and (= :grounded-in b) (contains? (:sources kg) c)))))
+          {:error :missing-endpoint :detail [a c b]}
+          bad bad
+          (and new? (not onto?) (profile/acyclic? p b) (cycle? kg b a c)) {:error :requires-cycle :detail [a c b]}))
 
-(defmethod apply-event :object-added [kg {:keys [object] :as e}]
-  (-> (assoc-in kg [:objects (:id object)] (assoc object :status :active :version 1))
-      (cond-> (:grounded-in object)
-        (update :edges conj {:from (:concept-id object) :to (:grounded-in object)
-                             :type :grounded-in :provenance :authored}))
-      (touched (:concept-id object) e)))
+      :edge-remove
+      (when-not (or (some (same-edge? [a b c]) (:edges kg)) (contains? (:proposals kg) [a c b])
+                    (contains? (:object-links kg) {:from a :to c :type b}))
+        {:error :missing :detail [a c b]}))))
 
-(defmethod apply-event :object-linked [kg {:keys [link]}]
-  (update kg :object-links (fnil conj #{}) (select-keys link [:from :to :type])))
-(defmethod apply-event :object-unlinked [kg {:keys [link]}]
-  (update kg :object-links (fnil disj #{}) (select-keys link [:from :to :type])))
+;; --- undo (2026-11-20): an edit is never erased, it is reversed ---------------
+;; The log is append-only, so an undo is a NEW `change` whose ops put back
+;; what an event changed, computed from the graph as it stood BEFORE it.
 
-(defmethod apply-event :object-promoted [kg {:keys [id]}] (assoc-in kg [:objects id :status] :active))
-(defmethod apply-event :object-demoted  [kg {:keys [id]}] (assoc-in kg [:objects id :status] :demoted))
+(defn- as-props
+  "A filed node as the node-set that writes it back."
+  [k n]
+  (cond-> (apply dissoc n managed) (class-of k) (assoc :is (class-of k))))
 
-(defmethod apply-event :item-added [kg {:keys [item]}]
-  (assoc-in kg [:items (:id item)] (assoc item :status :draft :version 1)))
+(defn restore-node-ops
+  "Ops that bring node `id` back as it stood in `kg`: a topic with its
+   links, its objects and items; any other node alone (a proposal is not
+   restored — it was rejected)."
+  [kg id]
+  (when-let [[k n] (node-at kg id)]
+    (case k
+      :proposals nil
+      :concepts
+      (let [own (fn [m f] (filter #(= id (f (val %))) (get kg m)))
+            objs (own :objects :concept-id)
+            oids (set (map key objs))]
+        (vec (concat [[:node-set id (as-props k n)]]
+                     (for [e (:edges kg)
+                           :when (and (or (= id (:from e)) (= id (:to e))) (not= :grounded-in (:type e))
+                                      (get-in kg [:concepts (if (= id (:from e)) (:to e) (:from e))]))]
+                       [:edge-set (:from e) (:type e) (:to e) (dissoc e :from :to :type :changed-by :changed-at)])
+                     (for [[oid o] objs] [:node-set oid (as-props :objects o)])
+                     (for [[iid i] (own :items :primary-concept-id)] [:node-set iid (as-props :items i)])
+                     (for [l (:object-links kg) :when (and (oids (:from l)) (oids (:to l)))]
+                       [:edge-set (:from l) (:type l) (:to l) {}]))))
+      [[:node-set id (as-props k n)]])))
 
-(defmethod apply-event :item-accepted [kg {:keys [id]}] (assoc-in kg [:items id :status] :active))
-(defmethod apply-event :item-retired  [kg {:keys [id]}] (assoc-in kg [:items id :status] :retired))
+(defn- inverse-op
+  "The ops that undo one op, read off the graph just before it."
+  [kg [op a b c d]]
+  (case op
+    :graph-set [[:graph-set (into {} (for [k (keys a)] [k (get-in kg [:graph k])]))]]
+    :node-set (let [[k n] (node-at kg a)]
+                (if (and n (not= :proposals k))
+                  (when-let [ks (seq (keys (apply dissoc b (concat managed [:is :updated]))))]
+                    [[:node-set a (into {} (for [x ks] [x (get n x)]))]])
+                  [[:node-remove a]]))
+    :node-remove (restore-node-ops kg a)
+    :edge-set (if-let [old (first (filter (same-edge? [a b c]) (:edges kg)))]
+                [[:edge-set a b c (into {} (for [k (keys (dissoc d :from :to :type :status))] [k (get old k)]))]]
+                [[:edge-remove a b c]])
+    :edge-remove (cond
+                   (contains? (:object-links kg) {:from a :to c :type b}) [[:edge-set a b c {}]]
+                   :else (when-let [old (first (filter (same-edge? [a b c]) (:edges kg)))]
+                           [[:edge-set a b c (dissoc old :from :to :type :changed-by :changed-at)]]))))
 
-(defmethod apply-event :version-created [kg {:keys [entity id payload] :as e}]
-  ;; an author who re-versions a stale object or topic has acted on it: its
-  ;; OWN flag clears. A topic's rewrite stales nothing else — staleness
-  ;; lives on material (Decisions #5); `:material` only waits for the next cut
-  (let [path ({:object :objects :item :items :concept :concepts} entity)
-        kg (update-in kg [path id]
-                      #(-> (merge % payload)
-                           (update :version inc)
-                           (cond-> (#{:object :concept} entity) (dissoc :stale?))))]
-    (touched kg (case entity :concept id :object (get-in kg [:objects id :concept-id]) nil) e)))
+(defn undoable?
+  "Is `e` an edit undo covers? Every write is a `change`."
+  [e]
+  (= :change (:ev/type e)))
 
-(defmethod apply-event :source-added [kg {:keys [source]}]
-  (assoc-in kg [:sources (:id source)] source))
+(defn undo-ops
+  "The ops of a `change` that reverses event `e`, given the graph as it
+   stood before `e`; nil when there is nothing to reverse."
+  [kg-before e]
+  (when (= :change (:ev/type e))
+    (loop [k kg-before [o & more] (:ops e) inv ()]
+      (if o
+        (recur (apply-op k o e) more (concat (inverse-op k o) inv))
+        (not-empty (vec inv))))))
 
-(defmethod apply-event :source-updated [kg {:keys [id change concepts]}]
-  (cond-> (update-in kg [:sources id :version] (fnil inc 1))
-    (= :material change) (material-stale id (some-> concepts set))))
+(defn- change-problem
+  "The first op that may not apply, or — in an ontology graph — a vocabulary
+   the result would leave unsound (a reserved id, a second ordering
+   relation): the copy into the graphs that use it could never be taken."
+  [kg ops e]
+  (let [migration? (and (not (:ontology-graph? kg))
+                        (some (fn [[op a]] (and (= :graph-set op) (contains? a :ontology-copy) (:ontology-copy a))) ops))]
+    (loop [k kg [o & more] ops]
+      (if o
+        (or (op-problem k o e migration?) (recur (apply-op k o e) more))
+        (let [gone (set (remove #(contains? (:concepts k) %) (keys (:concepts kg))))]
+          (cond
+            ;; a topic removed takes its material with it, or hands it over (a
+            ;; split): no object or item is left about nothing
+            (and (seq gone)
+                 (or (some #(gone (:concept-id %)) (vals (:objects k)))
+                     (some #(gone (:primary-concept-id %)) (vals (:items k)))))
+            {:error :bad-split :detail :material-unassigned}
 
-(defmethod apply-event :question-raised [kg {:keys [id concept-id question]}]
-  (assoc-in kg [:questions id] {:concept-id concept-id :question question}))
+            (:ontology-graph? k)
+            (when-let [why (profile/draft-problems (vocabulary k))]
+              {:error :bad-profile :detail why})
+            ;; a migration (2026-11-20): the new copy and the retyped data,
+            ;; judged together — whole, nothing left without meaning, every
+            ;; edge fitting its relation
+            migration?
+            (let [p (:profile k)
+                  kind-of #(get-in k [:concepts % :kind])]
+              (cond
+                (profile/problems p) {:error :bad-profile :detail (profile/problems p)}
+                (sync-breaks k p) {:error :ontology-breaks-data :detail (sync-breaks k p)}
+                :else (when-let [e (first (filter #(and (not= :grounded-in (:type %))
+                                                        (not (profile/fits? p (:type %) (kind-of (:from %)) (kind-of (:to %)))))
+                                                  (:edges k)))]
+                        {:error :relation-misfit :detail [(:from e) (:to e) (:type e)]})))))))))
 
-(defmethod apply-event :question-answered [kg {:keys [id answer]}]
-  (assoc-in kg [:questions id :answer] answer))
+(defn guard
+  "nil when event may be appended, else {:error ...}. Every event is a
+   `change`; its ops are checked in order on the graph as it would stand,
+   the whole event refused at the first problem."
+  [kg e]
+  (if-not (schema/valid? e)
+    {:error :invalid-schema :detail (schema/explain e)}
+    (change-problem kg (:ops e) e)))
 
-(defmethod apply-event :course-published [kg {:keys [course]}]
-  (assoc-in kg [:courses (:id course)] course))
+;; ---------------------------------------------------------------------------
+;; the fold
 
-(defmethod apply-event :default [kg _] kg)
+(defn apply-event
+  "One event onto the graph: every event is a `change`, applied op by op."
+  [kg e]
+  (if (= :change (:ev/type e)) (reduce #(apply-op %1 %2 e) kg (:ops e)) kg))
+
+(defn author-name
+  "Who an actor id is: the name the graph's log gives it, else the id."
+  [kg actor]
+  (or (get-in kg [:authors actor]) actor))
 
 (defn kg
   "The graph IS this fold."
@@ -776,12 +668,15 @@
 ;; publication and you have exactly what was published. Authors keep
 ;; appending past it; a learner pinned at the cut is blind to what follows.
 
+(defn- publishes? [course-id [op a b]] (and (= :node-set op) (= course-id a) (= :course (:is b))))
+
 (defn publication-cut
-  "The `ev/id` of the newest `course-published` for this course."
+  "The `ev/id` of the newest publication of this course (a `change` that
+   writes the course node)."
   [events course-id]
-  (->> events
-       (filter #(and (= :course-published (:ev/type %)) (= course-id (get-in % [:course :id]))))
-       last :ev/id))
+  (->> events (filter #(some (partial publishes? course-id) (:ops %))) last :ev/id))
+
+(defn- node-ids [e] (keep (fn [[op a]] (when (#{:node-set :node-remove} op) a)) (:ops e)))
 
 (defn events-at
   "The log as a learner pinned at `cut` sees it: everything up to and
@@ -793,29 +688,19 @@
     (let [i (first (keep-indexed #(when (= cut (:ev/id %2)) %1) events))]
       (if (nil? i)
         events                                 ; cut from another graph, or gone
-        ;; a patch carries the whole edited entity, so it reaches the pinned
-        ;; learner only for an entity that existed at the cut and had no
-        ;; MATERIAL change since — else it carried the rewrite with it, or
-        ;; built a ghost from nothing (review 2026-10-16 A4)
+        ;; a patch reaches the pinned learner only for nodes that existed at
+        ;; the cut and had no other change since — a material edit, a split, a
+        ;; removal would carry the rewrite with it or build a ghost from
+        ;; nothing (review 2026-10-16 A4)
         (let [before (take (inc i) events)
-              made (fn [e] (case (:ev/type e)
-                             :concept-accepted [[:concept (get-in e [:concept :id])]]
-                             :concept-split (for [c (:into e)] [:concept (:id c)])
-                             :object-added [[:object (get-in e [:object :id])]]
-                             :item-added [[:item (get-in e [:item :id])]]
-                             nil))
-              born (set (mapcat made before))]
+              born (set (mapcat node-ids before))]
           (loop [out (vec before) reworked #{} [e & more :as es] (drop (inc i) events)]
             (if (empty? es)
               out
-              (let [k [(:entity e) (:id e)]]
-                (cond
-                  ;; a split after the cut reworks its parts as a material edit does
-                  (= :concept-split (:ev/type e)) (recur out (into reworked (made e)) more)
-                  (not= :version-created (:ev/type e)) (recur out reworked more)
-                  (= :material (:change e)) (recur out (conj reworked k) more)
-                  (and (born k) (not (reworked k))) (recur (conj out e) reworked more)
-                  :else (recur out reworked more))))))))))
+              (let [ids (node-ids e)]
+                (if (and (= :patch (:edit e)) (seq ids) (every? born ids) (not-any? reworked ids))
+                  (recur (conj out e) reworked more)
+                  (recur out (into reworked ids) more))))))))))
 
 ;; --- bitemporal cut (2026-10-31) ---------------------------------------------
 ;; Every event carries TWO clocks once merge files exist: `:ev/ts` is the clock

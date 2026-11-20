@@ -11,6 +11,7 @@
             [loretile.exercise :as ex]
             [loretile.guide :as guide]
             [loretile.fold :as fold]
+            [loretile.ops :as ops]
             [loretile.graph-tools :as gt]
             [loretile.i18n :as i18n :refer [t tn]]
             [loretile.icons :as icons]
@@ -823,7 +824,7 @@
              [glyph :link "currentColor" 13]]
             [orbit-chip (str "orbit-del" (when pending? " pending")) 35
              (t (if pending? :ui/cancel :ui/remove))
-             #(del-toggle! id {:ev/type :concept-discarded :id id})
+             #(del-toggle! id (ops/discard-node id (fold/material-ids kg id)))
              (if pending?
                [:<>
                 [:circle.rel-ring {:r 11 :fill "none" :transform "rotate(-90)" :pathLength 100}]
@@ -1032,10 +1033,9 @@
                       ;; «added» only when it was: a refused id or a full
                       ;; storage keeps the form and what was typed in it
                       (when (and (seq @title)
-                                 (nil? (store/append! {:ev/type :concept-accepted
-                                                       :concept (cond-> {:id (fresh-id @title "t" #{}) :title @title
-                                                                         :definition @definition}
-                                                                  @kind (assoc :kind @kind))})))
+                                 (nil? (store/append! (ops/accept-node (cond-> {:id (fresh-id @title "t" #{}) :title @title
+                                                                                :definition @definition}
+                                                                         @kind (assoc :kind @kind))))))
                         (snack! (t :ui/topic-added {"{title}" @title}))
                         (reset! show-new-concept false)))}
          (t :ui/add)]
@@ -1045,8 +1045,7 @@
 ;; version-created event — never a re-accept (the guard refuses that)
 
 (defn- version! [entity id change payload]
-  (when (nil? (store/append! {:ev/type :version-created :entity entity :id id
-                              :change change :payload payload}))
+  (when (nil? (store/append! (ops/edit id payload change)))
     (snack! (t :ui/saved))))
 
 (defn- edit-btn [open]
@@ -1314,9 +1313,7 @@
           ^{:key edge-t}
           [:button.edge-btn
            {:on-click (fn [_]
-                        (when-not (store/append!
-                                   {:ev/type :edge-accepted
-                                    :edge {:from from :to to :type edge-t :provenance :authored}})
+                        (when-not (store/append! (ops/accept-edge {:from from :to to :type edge-t :provenance :authored}))
                           (snack! (t :ui/link-added)))
                         (reset! link-draft nil))}
            (if (profile/learning? (fold/profile kg)) ((edge-labels) edge-t) (edge-label kg edge-t))])
@@ -1351,7 +1348,7 @@
            ^{:key (str (name (:type l)) (:to l))}
            [:span.chip.lo-link (i18n/enum-label "olink" (:type l)) ": " (object-label to)
             [:button.chip-x {:title (t :ui/remove) :aria-label (t :ui/remove)
-                             :on-click #(store/append! {:ev/type :object-unlinked :link l})} "×"]])
+                             :on-click #(store/append! (ops/unlink-objects l))} "×"]])
          (when (seq others)
            (if-not @open
              [:button.lo-link-add {:on-click #(do (reset! target (:id (first others))) (reset! open true))}
@@ -1363,8 +1360,7 @@
               [:select.lo-link-target {:value (or @target "") :on-change #(reset! target (.. % -target -value))}
                (for [x others] ^{:key (:id x)} [:option {:value (:id x)} (object-label x)])]
               [:button.primary {:on-click (fn [_]
-                                            (when (nil? (store/append! {:ev/type :object-linked
-                                                                        :link {:from (:id o) :to @target :type @typ}}))
+                                            (when (nil? (store/append! (ops/link-objects {:from (:id o) :to @target :type @typ})))
                                               (reset! open false)))}
                (t :ui/link-save)]
               [:button {:on-click #(reset! open false)} (t :ui/cancel)]]))]))))
@@ -1409,15 +1405,15 @@
           [:button.primary
            {:on-click (fn [_]
                         (when (seq @text)
-                          (store/append! {:ev/type :object-added
-                                          :object (cond-> {:id (str "o-" (random-uuid))
+                          (store/append! (ops/add-object
+                                          (cond-> {:id (str "o-" (random-uuid))
                                                            :concept-id concept-id :kind @kind
                                                            :level @level :locale (store/locale-for-new)
                                                            :origin :authored :text @text}
                                                     (seq (parse-tags @audience))
                                                     (assoc :audience (parse-tags @audience))
                                                     (seq @source) (assoc :grounded-in @source)
-                                                    (and (seq @source) (seq @anchor)) (assoc :anchor @anchor))})
+                                                    (and (seq @source) (seq @anchor)) (assoc :anchor @anchor))))
                           (snack! (t :ui/lo-added))
                           (reset! text "") (reset! audience "") (reset! anchor "") (reset! open false)))}
            (t :ui/add-lo)]
@@ -1518,11 +1514,10 @@
                                 (if error
                                   (reset! err res)
                                   (let [id (str "i-" (random-uuid))]
-                                    (store/append! {:ev/type :item-added
-                                                    :item {:id id :primary-concept-id concept-id :level @level
-                                                           :kind :exercise :locale (store/locale-for-new)
-                                                           :spec (cond-> spec schema (assoc :schema schema))}})
-                                    (store/append! {:ev/type :item-accepted :id id})
+                                    (store/append! (ops/add-item {:id id :primary-concept-id concept-id :level @level
+                                                                  :kind :exercise :locale (store/locale-for-new)
+                                                                  :spec (cond-> spec schema (assoc :schema schema))}
+                                                                 :active))
                                     (snack! (t :ui/question-added))
                                     (reset! stem "") (reset! sol "") (reset! test "") (reset! setup nil)
                                     (reset! ordered? false) (reset! open false)))))
@@ -1532,10 +1527,9 @@
                       spec (if (= @kind :cloze)
                              {:text @stem :key @key*}
                              (merge {:stem @stem} (rows->choice @rows @right)))]
-                  (store/append! {:ev/type :item-added
-                                  :item {:id id :primary-concept-id concept-id
-                                         :level @level :kind @kind :locale (store/locale-for-new) :spec spec}})
-                  (store/append! {:ev/type :item-accepted :id id})
+                  (store/append! (ops/add-item {:id id :primary-concept-id concept-id
+                                                :level @level :kind @kind :locale (store/locale-for-new) :spec spec}
+                                               :active))
                   (snack! (t :ui/question-added))
                   (reset! stem "") (reset! rows (new-rows ["" "" ""])) (reset! right nil) (reset! key* "") (reset! open false)))))}
            (if @checking (t :ui/exercise-checking) (t :ui/add-question))]
@@ -1549,7 +1543,7 @@
   [:button.chip-x {:title (t :ui/remove) :aria-label (t :ui/remove)
                    :on-click (fn [^js ev]
                                (.stopPropagation ev)
-                               (when (nil? (store/append! {:ev/type :edge-discarded :edge e}))
+                               (when (nil? (store/append! (ops/discard-edge e)))
                                  (snack! (t :ui/removed))))}
    [icons/icon :close]])
 
@@ -1566,7 +1560,7 @@
          [:div.lo.lo-removed
           [:span.lo-kind (i18n/enum-label "okind" (:kind o)) " · " (i18n/enum-label "level" (:level o))]
           [:p.muted (let [x (fold/plain-text (str (:text o)))] (if (> (count x) 160) (str (subs x 0 159) "…") x))]
-          [:button.restore {:on-click #(when (nil? (store/append! {:ev/type :object-promoted :id (:id o)}))
+          [:button.restore {:on-click #(when (nil? (store/append! (ops/object-status (:id o) :active)))
                                          (snack! (t :ui/restored)))}
            (t :ui/restore-material)]])])))
 
@@ -1585,13 +1579,12 @@
        [:button.primary.answer-save
         {:disabled (str/blank? @answer)
          :on-click (fn [_]
-                     (when (nil? (store/append! {:ev/type :question-answered :id id :answer (str/trim @answer)}))
+                     (when (nil? (store/append! (ops/answer-question id (str/trim @answer))))
                        (when @as-material
-                         (store/append! {:ev/type :object-added
-                                         :object {:id (str "o-" (random-uuid)) :concept-id concept-id
-                                                  :kind :explanation :level :apprentice
-                                                  :locale (store/locale-for-new) :origin :authored
-                                                  :text (str/trim @answer)}}))
+                         (store/append! (ops/add-object {:id (str "o-" (random-uuid)) :concept-id concept-id
+                                                         :kind :explanation :level :apprentice
+                                                         :locale (store/locale-for-new) :origin :authored
+                                                         :text (str/trim @answer)})))
                        (snack! (t :ui/answered))))}
         (t :ui/answer-save)]])))
 
@@ -1681,8 +1674,7 @@
                                                     :definition (str/trim (str (:definition r)))}
                                              (:kind c) (assoc :kind (:kind c)))))
                               remap (fn [xs] (into {} (for [x xs] [(:id x) (:id (nth parts (row-of (:id x))))])))]
-                          (when (nil? (store/append! {:ev/type :concept-split :id id :into parts
-                                                      :item-remap (remap items) :object-remap (remap objs)}))
+                          (when (nil? (store/append! (ops/split id parts (remap items) (remap objs))))
                             (snack! (t :ui/split-done {"{n}" (count parts)}))
                             (reset! done false)
                             (goto! (str "#/c/" (js/encodeURIComponent (:id (first parts))))))))}
@@ -1710,7 +1702,7 @@
             (if dep?
               [:span.muted.deprecated-note (t :ui/deprecated-note)]
               [:button.deprecate {:class (when pending? "pending")
-                                  :on-click #(del-toggle! k {:ev/type :concept-deprecated :id id} :ui/deprecated-done)}
+                                  :on-click #(del-toggle! k (ops/deprecate-node id) :ui/deprecated-done)}
                (t (if pending? :ui/cancel :ui/deprecate))])])]))))
 
 ;; --- node properties (wiki/Property-Graph.md) --------------------------------
@@ -1921,7 +1913,7 @@
                                    (str (t :ui/source-word) (when (:anchor o) (str " · " (:anchor o))))]])]
              ;; the author always sees the marks: they are the author's to check
              [:p (fold/marks->hiccup (:text o) true)]]
-            [rm-btn (:id o) {:ev/type :object-demoted :id (:id o)}]
+            [rm-btn (:id o) (ops/object-status (:id o) :demoted)]
             ^{:key (str "links-" (:id o))} [object-links kg o]])
          ^{:key (str "removed-" id)} [removed-material kg id]
          ;; keyed by topic: the panel swaps topics in place, and an unkeyed form
@@ -1945,7 +1937,7 @@
                [editable item-edit-form i
                 [:span.lo-kind (i18n/enum-label "ikind" (:kind i))]
                 [:p (or (get-in i [:spec :stem]) (get-in i [:spec :text]))]]
-               [rm-btn (:id i) {:ev/type :item-retired :id (:id i)}]])
+               [rm-btn (:id i) (ops/item-status (:id i) :retired)]])
             ^{:key (str "item-" id)} [add-item-form kg id]
             ^{:key (str "bench-" id)} [draft-exercises-row kg id]])
          ^{:key (str "expert-" id)} [expert-questions kg id]
@@ -2097,9 +2089,8 @@
                            ;; with everyone's runs and progress (review 2026-10-16 A6)
                            (let [id (fresh-id @title "c" (set (keys (:courses kg))))]
                              (when-not (store/append!
-                                        {:ev/type :course-published
-                                         :course {:id id :title @title :targets targets
-                                                  :locale @locale :pass-threshold @threshold}})
+                                        (ops/publish-course {:id id :title @title :targets targets
+                                                             :locale @locale :pass-threshold @threshold}))
                                (snack! (t :ui/course-published {"{title}" @title}))
                                (reset! picked {})
                                (reset! chat/target-cards [])
@@ -2144,10 +2135,9 @@
                        (t :ui/republish-blocked))
               :on-click (fn [_]
                           (when (nil? (store/append!
-                                       {:ev/type :course-published
-                                        :course (select-keys course [:id :title :targets :locale
-                                                                     :pass-threshold :diagnostic-items
-                                                                     :final-items :series])}))
+                                       (ops/publish-course (select-keys course [:id :title :targets :locale
+                                                                                :pass-threshold :diagnostic-items
+                                                                                :final-items :series]))))
                             (snack! (t :ui/republished {"{n}" changed}))))}
              [icons/icon :open-ext]
              (if (zero? changed) (t :ui/republish-none) (t :ui/republish {"{n}" changed}))])]
@@ -2338,6 +2328,7 @@
        :duplicate (t :ui/error-duplicate)
        :in-course (t :ui/error-in-course)
        :storage-full (t :ui/error-storage-full)
+       :old-format (t :ui/error-old-format {"{n}" detail})
        :relation-exists (t :ui/error-relation-exists {"{id}" detail})
        :invalid-schema (t :ui/error-invalid-schema {"{detail}" (pr-str detail)})
        :unknown-relation (t :ui/error-unknown-relation {"{detail}" (pr-str detail)})
@@ -2595,79 +2586,13 @@
         {:disabled (str/blank? @q)
          :on-click (fn [_]
                      (when (nil? (store/append!
-                                  {:ev/type :cq-raised
-                                   :cq (cond-> {:id (str "cq-" (random-uuid)) :question (str/trim @q)}
-                                         (seq @rel) (assoc :pattern (cond-> {:relation (keyword @rel)}
-                                                                      (seq @from) (assoc :from-type (keyword @from))
-                                                                      (= "in" @dir) (assoc :inverse? true))))}))
+                                  (ops/raise-cq (cond-> {:id (str "cq-" (random-uuid)) :question (str/trim @q)}
+                                                  (seq @rel) (assoc :pattern (cond-> {:relation (keyword @rel)}
+                                                                               (seq @from) (assoc :from-type (keyword @from))
+                                                                               (= "in" @dir) (assoc :inverse? true)))))))
                        (snack! (t :ui/cq-added))
                        (reset! q "")))}
         (t :ui/add-cq)]]))))
-
-(defn- relation-form
-  "The ontology grows additively: a relation with its words and endpoints.
-   The guard refuses a second ordering relation, a reserved id, a duplicate."
-  [_]
-  (let [d (r/atom {:id "" :label "" :inverse "" :from "" :to "" :acyclic? false :ordering? false})]
-    (fn [kg]
-      (let [p (fold/profile kg)
-            field (fn [k ph] [:input {:placeholder ph :default-value (get @d k)
-                                      :on-change #(swap! d assoc k (.. % -target -value))}])
-            type-select (fn [k] [:select {:value (get @d k) :on-change #(swap! d assoc k (.. % -target -value))}
-                                 [:option {:value ""} (t :ui/cq-any-type)]
-                                 (for [nt (profile/node-types p)]
-                                   ^{:key (:id nt)} [:option {:value (name (:id nt))} (:label nt)])])]
-        [:div.onto-form.relation-form
-         (field :id (t :ui/rel-id-placeholder))
-         (field :label (t :ui/rel-label-placeholder))
-         (field :inverse (t :ui/rel-inverse-placeholder))
-         (type-select :from) [:span.muted "→"] (type-select :to)
-         [:label.check [:input {:type "checkbox" :checked (:acyclic? @d)
-                                :on-change #(swap! d assoc :acyclic? (.. % -target -checked))}]
-          " " (t :ui/rel-acyclic)]
-         ;; a new ontology graph starts without the one ordering relation a
-         ;; data graph needs (wiki/Ontology-Graph.md): offered until it exists
-         (when-not (some :ordering? (profile/relations p))
-           [:label.check [:input.rel-ordering {:type "checkbox" :checked (:ordering? @d)
-                                               :on-change #(swap! d assoc :ordering? (.. % -target -checked))}]
-            " " (t :ui/rel-ordering)])
-         [:button.primary.relation-add
-          {:disabled (or (str/blank? (:id @d)) (str/blank? (:label @d)))
-           :on-click (fn [_]
-                       (let [{:keys [id label inverse from to acyclic? ordering?]} @d]
-                         (when (nil? (store/append!
-                                      {:ev/type :relation-added
-                                       :relation (cond-> {:id (keyword (slug id)) :label (str/trim label)}
-                                                   (seq inverse) (assoc :inverse (str/trim inverse))
-                                                   (seq from) (assoc :from #{(keyword from)})
-                                                   (seq to) (assoc :to #{(keyword to)})
-                                                   acyclic? (assoc :acyclic? true)
-                                                   ordering? (assoc :ordering? true))}))
-                           (snack! (t :ui/relation-added))
-                           (reset! d {:id "" :label "" :inverse "" :from "" :to "" :acyclic? false :ordering? false}))))}
-          (t :ui/add-relation)]]))))
-
-(defn- node-type-form [kg]
-  (let [d (r/atom {:id "" :label "" :color ""})]
-    (fn [kg]
-      [:div.onto-form.node-type-form
-       [:input {:placeholder (t :ui/rel-id-placeholder) :default-value (:id @d)
-                :on-change #(swap! d assoc :id (.. % -target -value))}]
-       [:input {:placeholder (t :ui/type-label-placeholder) :default-value (:label @d)
-                :on-change #(swap! d assoc :label (.. % -target -value))}]
-       [:input {:type "color" :default-value "#4f7cff" :title "color"
-                :on-change #(swap! d assoc :color (.. % -target -value))}]
-       [:button.primary.node-type-add
-        {:disabled (or (str/blank? (:id @d)) (str/blank? (:label @d)))
-         :on-click (fn [_]
-                     (let [{:keys [id label color]} @d]
-                       (when (nil? (store/append!
-                                    {:ev/type :node-type-added
-                                     :node-type (cond-> {:id (keyword (slug id)) :label (str/trim label)}
-                                                  (seq color) (assoc :color color))}))
-                         (snack! (t :ui/node-type-added))
-                         (reset! d {:id "" :label "" :color ""}))))}
-        (t :ui/add-node-type)]])))
 
 (defn- cq-section
   "Competency questions with their check — what the graph must answer and
@@ -2699,7 +2624,7 @@
                 :else [:span.muted (t :ui/cq-no-pattern)]))
         (if inherited?
           [:span.muted.cq-inherited (t :ui/cq-inherited)]
-          [rm-btn id {:ev/type :cq-retired :id id}])])
+          [rm-btn id (ops/retire-cq id)])])
      ^{:key (str "cq-form-" (count report))} [cq-form kg]]))
 
 (defn- pitfalls-section
@@ -2727,32 +2652,6 @@
      (when (llm/ready?)
        [:button.probe-ontology {:on-click (fn [] (chat/probe-ontology!) (goto! "#/chat"))} (t :ui/probe-ontology)])]))
 
-(defn- describe-cell
-  "What a custom type or relation MEANS, in one sentence a model reads
-   (2026-10-21: a label alone is how `triggers` was read backwards). Shown
-   as text with a pencil; the pencil opens a semi-controlled input."
-  [_ _]
-  (let [open (r/atom false) d (r/atom nil)]
-    (fn [of x]
-      (if @open
-        [:span.describe-edit
-         [:input.describe-input {:placeholder (t :ui/describe-placeholder) :default-value (or (:description x) "")
-                                 :auto-focus true
-                                 :on-change #(reset! d (.. % -target -value))}]
-         [:button.primary.describe-save
-          {:on-click (fn [_]
-                       (when (nil? (store/append! {:ev/type :vocabulary-described :of of :id (:id x)
-                                                   :description (str/trim (or @d (:description x) ""))}))
-                         (snack! (t :ui/description-saved))
-                         (reset! open false)))}
-          (t :ui/owner-save)]
-         [:button {:on-click #(reset! open false)} (t :ui/cancel)]]
-        [:span.describe
-         (when (seq (:description x)) [:span.desc (:description x)])
-         [:button.pt-edit.describe-btn {:title (t :ui/describe) :aria-label (t :ui/describe)
-                                        :on-click #(do (reset! d nil) (reset! open true))}
-          [icons/icon :pencil]]]))))
-
 (defn- owner-section
   "Who answers for the graph (Netflix UDA: every domain model has an
    owner) — a team and how to reach it, in the log, so it exports and an
@@ -2773,8 +2672,7 @@
            {:on-click (fn [_]
                         (let [tm (str/trim (or @team (:team o) "")) ct (str/trim (or @contact (:contact o) ""))]
                           (when (and (seq tm)
-                                     (nil? (store/append! {:ev/type :graph-owner-set
-                                                           :owner (cond-> {:team tm} (seq ct) (assoc :contact ct))})))
+                                     (nil? (store/append! (ops/set-owner (cond-> {:team tm} (seq ct) (assoc :contact ct))))))
                             (snack! (t :ui/owner-saved)))))}
            (t :ui/owner-save)]]]))))
 
@@ -2940,9 +2838,10 @@
             [:td (if learning? (t :ui/topic) (:label nt))]
             [:td.muted (when (:learnable? nt) (t :ui/learnable))]
             [:td.muted.n (cond learning? (count (:concepts kg)) onto? "" :else (get n-kind (:id nt) 0))]]
-           ;; what it means, on its own full-width line (a column was cut off)
-           (when-not fixed? [:tr.desc-row [:td] [:td.desc-cell {:col-span 4} [describe-cell :node-type nt]]])])]]
-      (when-not fixed? ^{:key (str "nt-" (count (profile/node-types p)))} [node-type-form kg])]
+           ;; what it means, on its own full-width line (a column was cut off) —
+           ;; read-only: words are edited in the ontology graph
+           (when (and (not learning?) (seq (:description nt)))
+             [:tr.desc-row [:td] [:td.desc-cell {:col-span 4} [:span.describe [:span.desc (:description nt)]]]])])]]]
      [:section
       [:h3 (t :ui/relations)]
       [:table.onto
@@ -2964,9 +2863,9 @@
                                                     ;; the «no relation without a reader» rule, mechanical
                                                     (when (and (loose (:id r)) (seq (:cqs kg))) (t :ui/rel-unjustified))]))]
            [:td.muted.n (if onto? "" (get n-rel (:id r) 0))]]
-          (when-not (or fixed? (:reserved? r))
-            [:tr.desc-row [:td.desc-cell {:col-span 6} [describe-cell :relation r]]])])]]
-      (when-not fixed? ^{:key (str "rel-" (count (profile/relations p)))} [relation-form kg])]
+          (when (and (not learning?) (seq (:description r)) (not (:reserved? r)))
+            [:tr.desc-row [:td.desc-cell {:col-span 6} [:span.describe [:span.desc (:description r)]]]])])]]
+      ]
      ;; questions and pitfalls are checked over DATA — in the graphs that use it
      (when-not learning? [cq-section kg])
      (when-not (or learning? onto?) [pitfalls-section kg])]))

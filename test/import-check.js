@@ -69,7 +69,9 @@ fs.writeFileSync(BAD, '@prefix : <http://x#> .\n:a :b "unclosed .\n');
   check(/процесс/.test(tables[0]) && /Последовательность работы\./.test(tables[0]) && /роль/.test(tables[0]), 'node types in the graph\'s language, with their descriptions');
   check(/выполняет/.test(tables[1]) && /выполняется/.test(tables[1]) && /role → process/.test(tables[1]), 'a relation with its inverse and endpoints — one, not two');
   const log = await page.evaluate(() => loretileLog());
-  check(/:ev\/type :profile-set/.test(log) && /:id :performs/.test(log) && !/:id :performed-by/.test(log), 'the profile is the first event of the new graph');
+  // the bound graph's log carries its ontology as a copy (2026-11-20): the
+  // inverse folded into one relation, not imported as a second
+  check(/\[:graph-set \{:ontology "[^"]+".*:ontology-copy \{/.test(log) && /:id :performs/.test(log) && !/:id :performed-by/.test(log), 'the bound graph\'s log carries the ontology copy');
 
   await browser.close();
   fs.rmSync(dir, { recursive: true, force: true });

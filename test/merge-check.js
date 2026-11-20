@@ -1,7 +1,7 @@
-// MERGE FILES (loretile.merge): a log of events dropped on S3 under
+// MERGE FILES (loretile.merge): a log of `change` events dropped on S3 under
 // merges/{graph-id}/ shows up as a badge on the map and a row in the drawer;
-// picking it opens a sitting whose cards are the file's events — new topics
-// and links as ghosts on the map, edits and removals marked on their topics —
+// picking it opens a sitting whose cards are the file's events — proposed
+// topics and links (`:status :proposed`) as ghosts on the map, edits and removals marked on their topics —
 // and accepting appends the file's events verbatim. A merged file is a
 // source of the graph, so it never shows as pending again, reload included.
 // Usage: serve public/ first, then: node test/merge-check.js [baseUrl]
@@ -12,19 +12,20 @@ let failures = 0;
 const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); if (!ok) failures++; };
 
 const BUCKET = 'https://merge-bucket.test/b';
-const ev = (id, type, rest) => `{:ev/id "${id}" :ev/ns "demo-sql" :ev/actor "workflow-7" :ev/ts ${1700000000000 + +id.slice(2)} :ev/type ${type} ${rest}}`;
+// every event is a `change`; `rest` may carry `:edit` beside the ops
+const ev = (id, ops, rest = '') => `{:ev/id "${id}" :ev/ns "demo-sql" :ev/actor "workflow-7" :ev/ts ${1700000000000 + +id.slice(2)} :ev/type :change ${rest}:ops [${ops}]}`;
 const FILE_A = [
-  ev('m-1', ':concept-proposed', ':provenance :llm-drafted :concept {:id "merge-topic" :title "Тема из слияния" :definition "Определение из файла"}'),
-  ev('m-2', ':edge-proposed', ':edge {:from "merge-topic" :to "select" :type :requires :provenance :llm-drafted :justification "из файла"}'),
-  ev('m-3', ':object-added', ':object {:id "o-merge-1" :concept-id "merge-topic" :kind :explanation :level :novice :locale "ru" :origin :authored :text "Материал новой темы"}'),
-  ev('m-4', ':object-added', ':object {:id "o-merge-2" :concept-id "where" :kind :explanation :level :novice :locale "ru" :origin :authored :text "Материал к WHERE из файла"}'),
-  ev('m-5', ':version-created', ':entity :concept :id "limit" :change :patch :payload {:definition "Новое определение LIMIT из файла"}'),
-  ev('m-6', ':concept-discarded', ':id "distinct"'),
-  ev('m-7', ':item-added', ':item {:id "i-merge-1" :primary-concept-id "where" :level :novice :kind :single-choice :locale "ru" :spec {:stem "Вопрос из файла" :options ["да" "нет"] :key 0}}'),
+  ev('m-1', '[:node-set "merge-topic" {:title "Тема из слияния" :definition "Определение из файла" :status :proposed :provenance :llm-drafted}]'),
+  ev('m-2', '[:edge-set "merge-topic" :requires "select" {:provenance :llm-drafted :justification "из файла" :status :proposed}]'),
+  ev('m-3', '[:node-set "o-merge-1" {:is :object :concept-id "merge-topic" :kind :explanation :level :novice :locale "ru" :origin :authored :text "Материал новой темы"}]'),
+  ev('m-4', '[:node-set "o-merge-2" {:is :object :concept-id "where" :kind :explanation :level :novice :locale "ru" :origin :authored :text "Материал к WHERE из файла"}]'),
+  ev('m-5', '[:node-set "limit" {:definition "Новое определение LIMIT из файла"}]', ':edit :patch '),
+  ev('m-6', '[:node-remove "distinct"]'),
+  ev('m-7', '[:node-set "i-merge-1" {:is :item :primary-concept-id "where" :level :novice :kind :single-choice :locale "ru" :spec {:stem "Вопрос из файла" :options ["да" "нет"] :key 0}}]'),
   // a duplicate of a topic already in the graph: the guard drops it, no card
-  ev('m-8', ':concept-proposed', ':provenance :llm-drafted :concept {:id "select" :title "SELECT again" :definition "dup"}'),
+  ev('m-8', '[:node-set "select" {:title "SELECT again" :definition "dup" :status :proposed :provenance :llm-drafted}]'),
 ].join('\n');
-const FILE_B = ev('m-9', ':version-created', ':entity :concept :id "join" :change :material :payload {:definition "Определение JOIN, которое отклонят"}');
+const FILE_B = ev('m-9', '[:node-set "join" {:definition "Определение JOIN, которое отклонят"}]', ':edit :material ');
 const LISTING = (keys) => `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>b</Name>${keys.map((k) => `<Contents><Key>${k}</Key></Contents>`).join('')}</ListBucketResult>`;
 
 (async () => {
@@ -118,8 +119,8 @@ const LISTING = (keys) => `<?xml version="1.0" encoding="UTF-8"?><ListBucketResu
   check(/:ev\/id "m-3"/.test(l) && /:ev\/actor "workflow-7"/.test(l), 'the file\'s events landed verbatim — ids and actor kept');
   check(/Новое определение LIMIT/.test(l), 'the edit applied');
   check(/:ev\/recorded \d{13}/.test(l) && !/:ev\/recorded/.test(l.split(':ev/id "m-1"')[0]), 'file events are stamped with when this log took them in (:ev/recorded); local events are not');
-  check(/"o-merge-2"/.test(l) && /"i-merge-1"/.test(l) && /:item-accepted/.test(l), 'material and question landed, the question active');
-  check(/:source-added[^}]*"merges\/demo-sql\/run-7\.edn"/.test(l), 'the merge file is a source of the graph');
+  check(/"o-merge-2"/.test(l) && /"i-merge-1"/.test(l) && /:node-set "i-merge-1" \{[^}]*:status :active/.test(l), 'material and question landed, the question active');
+  check(/:node-set "merges\/demo-sql\/run-7\.edn" \{[^}]*:is :source/.test(l), 'the merge file is a source of the graph');
   await sleep(400);
   check(await nodes() === before, 'one topic added, one removed: the map count is unchanged');
   check(await count('.node-ghost') === 0 && await count('.edge-ghost') === 0, 'no ghosts left');

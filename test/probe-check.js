@@ -84,9 +84,11 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   // accept both: the existing relation's question is recorded; the new relation joins first
   for (let i = 0; i < 2; i++) { await page.click('.card-cq-draft .cq-draft-accept'); await sleep(300); }
   const log = await page.evaluate(() => loretileLog());
-  check((log.match(/:cq-raised/g) || []).length === 2, 'two questions recorded');
-  check(/:relation-added/.test(log) && /:id :due-by/.test(log), 'the new relation joined the ontology');
-  check(!/:relation-added[^\n]*:runs-in/.test(log), 'the existing one was not added again');
+  const logs = await page.evaluate(() => loretileLogs());
+  check((log.match(/:is :cq/g) || []).length === 2, 'two questions recorded');
+  // the vocabulary lives in the ontology graph (an edge there), the bound graph takes the copy
+  check(/:edge-set "process" :due-by "rule"/.test(logs) && /:id :due-by/.test(log), 'the new relation joined the ontology');
+  check((logs.match(/:edge-set "process" :runs-in "system"/g) || []).length === 1, 'the existing one was not added again');
   check(await page.$('.error') === null, 'no guard error');
   await page.goto(BASE + '#/ontology', { waitUntil: 'networkidle0' }); await sleep(300);
   const onto = await text('.ontology-page');

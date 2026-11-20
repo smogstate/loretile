@@ -92,6 +92,8 @@ const questionsFor = (user) => {
   }, REPLIES, questionsFor.toString());
   const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
   const log = () => page.evaluate(() => loretileLogs());
+  // one segment per [:node-set "id" {props}] op; `cls` keeps those whose :is is that class
+  const nodeOps = (l, cls) => l.split('[:node-set ').slice(1).filter((o) => o.includes(':is :' + cls));
 
   await page.goto(BASE, { waitUntil: 'networkidle0' });
   await page.evaluate(() => {
@@ -146,7 +148,7 @@ const questionsFor = (user) => {
     if (!done) break; await sleep(250);
   }
   const l1 = await log();
-  const objs = l1.split('{:ev/id').filter((e) => e.includes(':object-added'));
+  const objs = nodeOps(l1, 'object');
   check(objs.length === 9 && objs.every((e) => /:origin :generated/.test(e)), 'material accepted in a learner\'s own graph is «generated» (no curator vetted it) (' + objs.length + ')');
 
   check(/вопросы для тем: 9/.test(await text('.card-build')), 'the «Your course» step asks for check questions for all nine topics');
@@ -164,7 +166,7 @@ const questionsFor = (user) => {
     const c = await page.$('.card-item-draft button.primary');
     if (!c) break; await c.click(); await sleep(200);
   }
-  const items = (await log()).split('{:ev/id').filter((e) => e.includes(':item-added'));
+  const items = nodeOps(await log(), 'item');
   check(items.length === 15 && items.every((e) => /:origin :generated/.test(e) && /:level :novice/.test(e) && /:kind :single-choice/.test(e)),
     'accepted questions are «generated», at the level of the topic\'s material (' + items.length + ')');
 
@@ -173,7 +175,7 @@ const questionsFor = (user) => {
     'five topics are ready: the course can be built now, alongside questions for the other four');
   await page.click('.card-build .build-course'); await sleep(800);
   check(/#\/learn\/c-/.test(page.url()) && /Обжарка кофе/.test(await text('.learn')), 'the course is assembled and opens');
-  const course = (await log()).split('{:ev/id').find((e) => e.includes(':course-published')) || '';
+  const course = nodeOps(await log(), 'course')[0] || '';
   check(/\["first-crack" :novice\]/.test(course) && /\["roast-levels" :novice\]/.test(course) && /\["t7" :novice\]/.test(course) && !/"t3"/.test(course),
     'its targets are the ready topics at their level');
   await page.click('.learn .start'); await sleep(400);

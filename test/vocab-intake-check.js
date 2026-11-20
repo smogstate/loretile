@@ -148,14 +148,14 @@ const DREPLY = { ...REPLY, relations: [...REPLY.relations, { id: 'follows', labe
   const ologMatch = await page.evaluate((id) => loretileLog(id) || '', oid);
   check(/:node-set "rule" \{:title "правило"\}/.test(ologMatch), 'accepting writes the type into the ONTOLOGY graph');
   check(/Ставка 20/.test(await pile()), 'its copy comes back here and the waiting node is now a card');
-  check(/:concept-proposed[^}]*:id "vat"/.test(await log()), 'the node that waited is proposed now (a ghost on the map)');
+  check(/:node-set "vat" \{[^}]*:status :proposed/.test(await log()), 'the node that waited is proposed now (a ghost on the map)');
   const pairCall = (await page.evaluate(() => window.__calls)).find((c) => /НДС на услуги/.test(c.user) && /Оплата поставщику/.test(c.user) && c.user !== (window.__calls[0] || {}).user);
   check(!!pairCall || (await page.evaluate(() => window.__calls.length)) >= 2, 'and the pair search runs over it — its links are asked');
   check(await page.$('.card-relation-draft') !== null && /регулируется/.test(await pile()),
     'a link it needs that the ontology lacks comes as a relation draft');
-  await page.evaluate(() => [...document.querySelectorAll('.card')].find((c) => /НДС на услуги/.test(c.textContent)).querySelector('button.primary').click());
+  await page.evaluate(() => [...document.querySelectorAll('.card:not(.card-relation-draft)')].find((c) => /НДС на услуги/.test(c.textContent)).querySelector('button.primary').click());
   await sleep(500);
-  check(/:id "vat"[^}]*:kind :rule/.test(await log()), 'and is accepted with the new type');
+  check(((await log()).match(/:node-set "vat" \{[^}]*\}/g) || []).some((x) => /:kind :rule/.test(x) && /:status :accepted/.test(x)), 'and is accepted with the new type');
 
   // SLICE 4 — a relation the ontology lacks: the link waits, a card adds the relation to the ontology graph
   await page.click('.chat-head .pt-new'); await sleep(200);
@@ -176,7 +176,7 @@ const DREPLY = { ...REPLY, relations: [...REPLY.relations, { id: 'follows', labe
   await page.evaluate(() => { const b = document.querySelector('.accept-all-topics'); if (b) b.click(); }); await sleep(500);
   await page.evaluate(() => { [...document.querySelectorAll('.card')].filter((c) => /проверяет/.test(c.textContent) && c.querySelector('button.primary')).forEach((c) => c.querySelector('button.primary').click()); });
   await sleep(500);
-  check(/:edge-accepted[^}]*:from "acc2", :to "tax2", :type :checks/.test(await log()), 'the waiting link is accepted once its relation and both nodes exist');
+  check(/:edge-set "acc2" :checks "tax2" \{[^}]*:status :accepted/.test(await log()), 'the waiting link is accepted once its relation and both nodes exist');
 
   // DERIVE: the document makes an ontology first, then is read as this graph's content
   await fresh('Пустой 3');

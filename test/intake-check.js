@@ -163,7 +163,7 @@ fs.writeFileSync(FIXTURE, Array.from({ length: 12 }, (_, i) =>
   await page.click('.confirm-new .drop-rest');
   await sleep(400);
   log = await page.evaluate(() => loretileLog());
-  check(/:edge-discarded/.test(log) && (await page.$$('.card')).length === 0, 'discard all rejects the rest');
+  check(/\[:edge-remove "/.test(log) && (await page.$$('.card')).length === 0, 'discard all rejects the rest');
 
   fs.unlinkSync(FIXTURE);
   await browser.close();

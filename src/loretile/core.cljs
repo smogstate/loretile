@@ -19,7 +19,6 @@
     (set! (.. js/document -body -textContent) "Loretile cannot run inside a frame.")
     ;; the logs come out of IndexedDB first (async)
     (.then (store/load!) (fn []
-  (store/migrate-ontologies!)
   (sync/start!)                     ; graphs kept by the server: local-first sync (wiki/Graph-Sync.md)
   (vectors/load!)
   (chat/restore!)

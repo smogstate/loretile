@@ -2,7 +2,7 @@
 // sentence per node type and relation saying what it MEANS, who owns the
 // graph, and the graph as RDF for an organisation's own tools.
 //  - the sample ontology's descriptions arrive with the file
-//  - #/ontology: describe a relation (and clear it), set the owner
+//  - #/ontology: set the owner (a graph-set op)
 //  - the agent export (.md) and the RDF export (.ttl) carry both
 //  - a learning graph shows no description cells (its words are built in)
 // Usage: serve public/ on :8291; node test/meaning-check.js
@@ -61,47 +61,31 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await sleep(800);
   check(/:description "Роль → процесс: роль делает этот процесс/.test(await log()), 'the sample ontology\'s descriptions arrive with the file');
   await page.goto(BASE + '#/ontology', { waitUntil: 'networkidle0' }); await sleep(300);
+  // what each type and relation means, read-only on its own row (words are
+  // edited in the ontology graph since 2026-11-20)
   const tables = await page.$$eval('table.onto', (ts) => ts.map((t) => t.textContent));
   check(/роль делает этот процесс/.test(tables[1]), 'the relations table shows what each relation means');
   check(/Число, по которому судят о процессе/.test(tables[0]), 'and the node types table what each type is');
   // the stored log is EDN; an event's keys come in any order
-  const ev = (l, type, ...parts) => l.split(/(?=\{:ev\/)/).some((x) => x.includes(':ev/type ' + type) && parts.every((p) => x.includes(p)));
-
-  // describe a relation, then clear the description
-  // a description sits on its own row, right under the row of its relation
-  const rowOf = (id) => page.evaluateHandle((id) => {
-    const tr = [...document.querySelectorAll('table.onto tr')].find((r) => r.querySelector('code') && r.querySelector('code').textContent === id);
-    const next = tr && tr.nextElementSibling;
-    return next && next.classList.contains('desc-row') ? next : document.createElement('tr');
-  }, id);
-  await (await (await rowOf('measures')).asElement().$('.describe-btn')).click(); await sleep(200);
-  await clear('.describe-input');
-  await page.type('.describe-input', 'Метрика → процесс: по ней видно, хорошо ли идёт процесс.');
-  await page.click('.describe-save'); await sleep(400);
-  check(ev(await log(), ':vocabulary-described', ':of :relation', ':id :measures', ':description "Метрика → процесс: по ней видно'), 'a new description is an event in the log');
-  check(/по ней видно/.test(await (await rowOf('measures')).asElement().evaluate((tr) => tr.textContent)), 'and the row shows it');
-  await (await (await rowOf('performs')).asElement().$('.describe-btn')).click(); await sleep(200);
-  await clear('.describe-input');
-  await page.click('.describe-save'); await sleep(400);
-  check(!/роль делает этот процесс/.test(await (await rowOf('performs')).asElement().evaluate((tr) => tr.textContent)), 'an emptied description is cleared');
-  check(await page.$('table.onto tr .describe-btn') !== null && await (await rowOf('grounded-in')).asElement().$('.describe-btn') === null,
-    'the reserved source link has no pencil');
+  const ev = (l, ...parts) => l.split(/(?=\{:ev\/)/).some((x) => x.includes(':ev/type :change') && parts.every((p) => x.includes(p)));
+  // describing a relation from this page is gone with the graph-local vocabulary
+  // forms (2026-11-20): a vocabulary is edited in its ontology graph
 
   // the owner
   await page.type('.owner-team', 'Финансы');
   await page.type('.owner-contact', 'fin@example.com');
   await page.click('.owner-save'); await sleep(400);
-  check(ev(await log(), ':graph-owner-set', ':team "Финансы"', ':contact "fin@example.com"'), 'the owner is an event in the log');
+  check(ev(await log(), ':graph-set {:owner {', ':team "Финансы"', ':contact "fin@example.com"'), 'the owner is an event in the log');
   await page.reload({ waitUntil: 'networkidle0' }); await sleep(400);
   check((await page.$eval('.owner-team', (e) => e.value)) === 'Финансы', 'and the form shows it after a reload');
 
   // --- both exports carry the meaning and the owner ------------------------------
   const md = await download('.entity-row.on .export-agent');
   check(/Owner: Финансы \(fin@example.com\)/.test(md), 'the agent export names the owner');
-  check(/`measures` измеряет \/ измеряется: Метрика → процесс: по ней видно/.test(md), 'and each relation with what it means');
+  check(/`measures` измеряет \/ измеряется: Метрика → процесс: метрика говорит/.test(md), 'and each relation with what it means');
   const ttl = await download('.entity-row.on .export-ttl');
   check(/^@prefix rdf: /.test(ttl), 'the RDF export is Turtle');
-  check(/v:measures a owl:ObjectProperty ;[^.]*rdfs:comment "Метрика → процесс: по ней видно[^"]*"@ru/.test(ttl), 'a relation is an OWL property with its description');
+  check(/v:measures a owl:ObjectProperty ;[^.]*rdfs:comment "Метрика → процесс: метрика говорит[^"]*"@ru/.test(ttl), 'a relation is an OWL property with its description');
   check(/lt:team "Финансы" ; lt:contact "fin@example.com"/.test(ttl), 'the owner is in the RDF');
   check(/v:process a owl:Class/.test(ttl) && /rdfs:domain v:metric/.test(ttl), 'types are classes, endpoints domain and range');
 

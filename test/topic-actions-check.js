@@ -1,8 +1,8 @@
-// The four events nothing wrote until 2026-10-14 (the loretile graph's
-// check-cqs found them): answer an expert question (question-answered),
-// restore removed material (object-promoted), split a topic (concept-split)
-// and mark one deprecated (concept-deprecated) — through the topic panel,
-// on the SQL demo.
+// The four writes nothing made until 2026-10-14 (the loretile graph's
+// check-cqs found them): answer an expert question (the question's :answer),
+// restore removed material (an object's :status :active), split a topic (the
+// old node removed and its parts set in one change) and mark one deprecated
+// (:status :deprecated) — through the topic panel, on the SQL demo.
 // Usage: serve public/ first, then: node test/topic-actions-check.js [baseUrl]
 const puppeteer = require('puppeteer-core');
 const BASE = process.argv[2] || 'http://localhost:8291';
@@ -37,27 +37,29 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await page.type('.answer-form textarea', 'Keyset-пагинация; OFFSET — только для отчётов.');
   await page.click('.answer-form input[type=checkbox]');
   await page.click('.answer-form .answer-save'); await sleep(400);
-  check(/:question-answered/.test(await log()), 'the answer is written');
+  check(/:node-set "[^"]+" \{:answer "Keyset-пагинация/.test(await log()), 'the answer is written');
   check(/→ Keyset-пагинация/.test(await text('.expert-questions')) && /открыто: 0/.test(await text('.expert-questions')), 'and shown as answered');
   check((await page.$$('.gpopup .lo:not(.lo-removed)')).length === objsBefore + 1, 'and, ticked, became material on the topic');
 
-  // 2. object-demoted → object-promoted
+  // 2. an object demoted → active again
   await open('where');
   const before = (await page.$$('.gpopup .lo:not(.lo-removed)')).length;
   await page.click('.gpopup .lo .pt-rm'); await sleep(6600);
   check((await page.$$('.gpopup .lo:not(.lo-removed)')).length === before - 1, 'removing material takes it out of use');
   check(/Убранные материалы \(1\)/.test(await text('.removed-material summary')), 'and lists it under removed material');
   await page.click('.removed-material summary'); await sleep(150);
+  const promoted = async () => ((await log()).match(/:node-set "[^"]+" \{:status :active\}/g) || []).length;
+  const promotedBefore = await promoted();
   await page.click('.removed-material .restore'); await sleep(400);
-  check(/:object-promoted/.test(await log()), 'restoring writes object-promoted');
+  check(await promoted() === promotedBefore + 1, 'restoring writes the object :status :active');
   check((await page.$$('.gpopup .lo:not(.lo-removed)')).length === before && !(await page.$('.removed-material')), 'and the material is back');
 
-  // 3. concept-split — refused on a course target, done on a free topic
+  // 3. a split — refused on a course target, done on a free topic
   await open('group-by');
   await page.click('.topic-actions .split-open'); await sleep(200);
   await page.type('.split-form .split-row:nth-of-type(2) input', 'HAVING после группировки');
   await page.click('.split-form .split-save'); await sleep(400);
-  check(/курс/i.test(await text('.error')) && !/:concept-split/.test(await log()), 'a course target cannot be split (refused in words)');
+  check(/курс/i.test(await text('.error')) && !/:node-remove "group-by"/.test(await log()), 'a course target cannot be split (refused in words)');
   await page.click('.error button').catch(() => {});
   await page.click('.split-form button:not(.primary):not(.split-add)').catch(() => {});
 
@@ -71,16 +73,16 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   if (selects.length) await selects[selects.length - 1].select('1');
   await page.click('.split-form .split-save'); await sleep(900);
   const l = await log();
-  check(/:concept-split/.test(l), 'the split is written');
+  check(/\[:node-remove "order-by"\] \[:node-set "order-by" \{/.test(l) && /:node-set "[^"]+" \{:title "Сортировка по нескольким столбцам"[^}]*:status :accepted/.test(l), 'the split is written');
   const hash = await page.evaluate(() => decodeURIComponent(location.hash));
   check(hash === '#/c/order-by', `the first part keeps the topic's id (${hash})`);
   check((await page.$$('.node:not(.node-ghost)')).length === nodesBefore + 1, 'one topic became two on the map');
   check(/Сортировка по нескольким столбцам/.test(await page.evaluate(() => [...document.querySelectorAll('.node title')].map((t) => t.textContent).join('|'))), 'the new topic is on the map');
 
-  // 4. concept-deprecated — one-way, behind the ring
+  // 4. deprecated — one-way, behind the ring
   await open('tables');
   await page.click('.topic-actions .deprecate'); await sleep(6600);
-  check(/:concept-deprecated/.test(await log()), 'deprecating is written after the ring');
+  check(/:node-set "tables" \{:status :deprecated\}/.test(await log()), 'deprecating is written after the ring');
   check(/Устарела/.test(await text('.topic-actions')) && !(await page.$('.topic-actions .deprecate')), 'the panel says so, and offers no second deprecate');
   check(await page.$('.node.tile-deprecated') !== null, 'the map greys it');
 

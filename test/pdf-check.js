@@ -106,7 +106,7 @@ const MOCK_OPS = {
   }
   check(/Прочитан «fixture\.pdf»: 2 стр/.test(await page.$eval('.msgs', (e) => e.textContent)),
     'system message reports the read');
-  check(/:source-added/.test(await page.evaluate(() => loretileLog())),
+  check(/:node-set "src-[^"]+" \{[^}]*:is :source/.test(await page.evaluate(() => loretileLog())),
     'attaching a document adds a source node');
   await page.screenshot({ path: 'test/shot-pdf-attached.png' });
 

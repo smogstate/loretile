@@ -1,6 +1,6 @@
 // Who changed what (2026-10-21: every event said «denis»). A device has one
 // author id; the name set in Settings is written into each graph the person
-// changes (`author-named`), and the topic panel and the exports say who
+// changes (a `[:graph-set {:authors {id name}}]` change), and the topic panel and the exports say who
 // added and last changed a topic.
 // Usage: serve public/ on :8291; node test/author-check.js
 const puppeteer = require('puppeteer-core');
@@ -21,6 +21,8 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   });
   const log = () => page.evaluate(() => loretileLog() || '');
   const evs = async () => (await log()).split(/(?=\{:ev\/)/);
+  // the change that names an author: [:graph-set {:authors {"a-…" "Name"}}]
+  const namings = async () => (await evs()).filter((x) => /\[:graph-set \{:authors \{/.test(x));
   const addTopic = async (title) => {
     await page.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(300);
     await page.evaluate(() => [...document.querySelectorAll('.rail .rbtn')].find((e) => /Тема/.test(e.title)).click());
@@ -44,8 +46,8 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   const id = (await page.evaluate(() => localStorage.getItem('loretile-author'))).match(/:id "(a-[0-9a-f]{8})"/)[1];
   const mine = (await evs()).filter((x) => x.includes(':ev/actor "' + id + '"'));
   check(mine.length === 1 && mine[0].includes('Без имени'), `the change carries this device's author id (${id})`);
-  check(!(await log()).includes(':author-named'), 'with no name set, nothing names it');
-  const tid = (await log()).match(/:id "([^"]+)",? :title "Без имени"/)[1];
+  check((await namings()).length === 0, 'with no name set, nothing names it');
+  const tid = (await log()).match(/:node-set "([^"]+)" \{:title "Без имени"/)[1];
   await page.goto(BASE + '#/c/' + encodeURIComponent(tid), { waitUntil: 'networkidle0' }); await sleep(500);
   check(await page.$('.authorship') === null, 'and the panel shows no bare id');
 
@@ -54,9 +56,9 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await page.type('.author-name', 'Анна');
   await page.click('.author-save'); await sleep(300);
   await addTopic('С именем');
-  const named = (await evs()).filter((x) => x.includes(':ev/type :author-named'));
-  check(named.length === 1 && named[0].includes(':name "Анна"') && named[0].includes(':ev/actor "' + id + '"'), 'the next change first writes author-named for this id');
-  const tid2 = (await log()).match(/:id "([^"]+)",? :title "С именем"/)[1];
+  const named = await namings();
+  check(named.length === 1 && named[0].includes(':authors {"' + id + '" "Анна"}') && named[0].includes(':ev/actor "' + id + '"'), 'the next change first writes the name for this id');
+  const tid2 = (await log()).match(/:node-set "([^"]+)" \{:title "С именем"/)[1];
   await page.goto(BASE + '#/c/' + encodeURIComponent(tid2), { waitUntil: 'networkidle0' }); await sleep(500);
   check(/Добавлено: Анна · изменено: Анна, \d{4}-\d\d-\d\d/.test(await page.$eval('.authorship', (e) => e.textContent).catch(() => '')), 'the panel says who added and changed it');
   await page.goto(BASE + '#/c/' + encodeURIComponent(tid), { waitUntil: 'networkidle0' }); await sleep(500);
@@ -64,14 +66,14 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
 
   // the same name again writes nothing; a new name writes once more
   await addTopic('Ещё одна');
-  check((await evs()).filter((x) => x.includes(':ev/type :author-named')).length === 1, 'the graph already knows the name: no second author-named');
+  check((await namings()).length === 1, 'the graph already knows the name: no second naming');
   await page.goto(BASE + '#/settings', { waitUntil: 'networkidle0' }); await sleep(300);
   await page.click('.author-name', { clickCount: 3 }); await page.keyboard.press('Backspace');
   await page.focus('.author-name'); await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control'); await page.keyboard.press('Backspace');
   await page.type('.author-name', 'Анна К.');
   await page.click('.author-save'); await sleep(300);
   await addTopic('После переименования');
-  check((await evs()).filter((x) => x.includes(':ev/type :author-named')).length === 2, 'a new name is written once more, under the same id');
+  check((await namings()).length === 2 && (await namings())[1].includes(':authors {"' + id + '" "Анна К."}'), 'a new name is written once more, under the same id');
 
   // the agent export says it
   await page.goto(BASE + '#/graphs', { waitUntil: 'networkidle0' }); await sleep(300);

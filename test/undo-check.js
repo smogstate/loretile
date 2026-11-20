@@ -44,7 +44,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await addNode('Первая');
   await addNode('Вторая');
   check(await nodes() === 2, 'two nodes added');
-  const id = (await log()).match(/:id "([^"]+)", :title "Вторая"/)[1];
+  const id = (await log()).match(/:node-set "([^"]+)" \{:title "Вторая"/)[1];
 
   // a property, then undo it in the popup's absence (the map has focus)
   await page.goto(BASE + '#/c/' + encodeURIComponent(id), { waitUntil: 'networkidle0' }); await sleep(400);
@@ -84,7 +84,10 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   check(await nodes() === 3 && /Нечего возвращать/.test(await page.$eval('.snack', (e) => e.textContent).catch(() => '')),
     'after a fresh edit there is nothing to redo');
   // the log only grew: every undo is an appended change
-  check(((await log()).match(/:ev\/type :concept-accepted/g) || []).length === 3, 'the log only grew — no edit was erased');
+  // three nodes made by hand, each creation still there; 9 changes = 3 creations + 1 property + 5 undo/redo
+  const final = await log();
+  check((final.match(/:node-set "[^"]+" \{:title "(Первая|Вторая|Третья)", :definition "", :status :accepted\}/g) || []).length === 3
+    && (final.match(/:ev\/type :change/g) || []).length === 9, 'the log only grew — no edit was erased');
 
   await browser.close();
   console.log(failures ? 'UNDO CHECK FAILED' : 'UNDO CHECK OK');

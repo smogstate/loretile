@@ -134,7 +134,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await page.evaluate(() => [...document.querySelectorAll('.cards .card')].find((c) => /Bud load/.test(c.textContent)).querySelector('button.primary').click());
   await sleep(400);
   const lo = (await logText()).split('{:ev/id').find((e) => e.includes('eight to twelve buds')) || '';
-  check(/:object-added/.test(lo) && /:locale "en"/.test(lo), 'a learning object drafted in the chat is stamped "en"');
+  check(/:is :object/.test(lo) && /:locale "en"/.test(lo), 'a learning object drafted in the chat is stamped "en"');
 
   await browser.close();
   console.log(failures ? 'LOCALE CHECK FAILED' : 'LOCALE CHECK OK');

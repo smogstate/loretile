@@ -47,11 +47,10 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/sql.ru.edn', 'utf8')
   check(/Запрос читают/.test(await text('.panel .lo-link-form .lo-link-target')), 'the target list offers the other material on this topic');
   await page.evaluate(() => document.querySelector('.panel .lo-link-form button.primary').click()); await sleep(300);
   check(/пример к: объяснение · Запрос читают/.test(await text('.panel .lo-link')), 'the link shows as a chip on the example');
-  const ev = (await log()).split('{:ev/id').find((x) => x.includes(':object-linked')) || '';
-  check(/:from "o-select-1"/.test(ev) && /:to "o-select-0"/.test(ev) && /:type :example-of/.test(ev), 'and is an event in the log');
+  check(/\[:edge-set "o-select-1" :example-of "o-select-0"/.test(await log()), 'and is an event in the log');
 
   await page.evaluate(() => document.querySelector('.panel .lo-link .chip-x').click()); await sleep(300);
-  check(await page.$('.panel .lo-link') === null && /:object-unlinked/.test(await log()), 'the × takes it back, also as an event');
+  check(await page.$('.panel .lo-link') === null && /\[:edge-remove "o-select-1" :example-of "o-select-0"\]/.test(await log()), 'the × takes it back, also as an event');
   await page.evaluate(() => document.querySelectorAll('.panel .lo')[1].querySelector('.lo-link-add').click()); await sleep(200);
   await page.select('.panel .lo-link-form .lo-link-type', 'example-of');
   await page.evaluate(() => document.querySelector('.panel .lo-link-form button.primary').click()); await sleep(300);

@@ -71,7 +71,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await sleep(3000);   // the push follows an edit after ~2 s
     await syncNow(A);
     const gid = await A.evaluate(() => cljs.core.deref(loretile.store.current));
-    const nid = (await log(A)).match(/:id "([^"]+)", :title "Икс"/)[1];
+    const nid = (await log(A)).match(/:node-set "([^"]+)" \{:title "Икс"/)[1];
     check(/Икс/.test(await onServer(gid)), 'A\'s new graph and node reached the server a moment after the edit');
     const list = await fetch(BASE + 'api/graphs').then((r) => r.text());
     check(new RegExp(`:id "${gid}"`).test(list) && /Общий граф/.test(list), 'the server lists it under its title');

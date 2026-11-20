@@ -1,5 +1,5 @@
 // In-place editing (kintale's pencil): topic, learning object and question
-// each edit through a version-created event; the change survives a reload.
+// each edit through a change event carrying `:edit :patch`; the change survives a reload.
 // Usage: serve public/ first, then: node test/edit-check.js [baseUrl]
 const puppeteer = require('puppeteer-core');
 const BASE = process.argv[2] || 'http://localhost:8291';
@@ -30,6 +30,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await page.type(sel, value);
   };
 
+  const editsBefore = await page.evaluate(() => (loretileLog().match(/:edit :patch/g) || []).length);
   // topic: title + definition, as a plain patch
   await page.click('.def-row .pt-edit');
   await sleep(150);
@@ -69,8 +70,8 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await sleep(800);
   check(/GROUP BY: корзины/.test(await text('.panel-head h2')) && /Отредактированный объект/.test(await text('.lo p'))
     && /Новый вопрос/.test(await text('.item p')), 'edits survive a reload');
-  const versions = await page.evaluate(() => (loretileLog().match(/:version-created/g) || []).length);
-  check(versions === 3, `three version-created events in the log (got ${versions})`);
+  const versions = await page.evaluate(() => (loretileLog().match(/:edit :patch/g) || []).length) - editsBefore;
+  check(versions === 3, `three edit (:edit :patch) events in the log (got ${versions})`);
 
   await browser.close();
   console.log(failures ? 'EDIT CHECK FAILED' : 'EDIT CHECK OK');

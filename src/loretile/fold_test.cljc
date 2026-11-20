@@ -10,15 +10,59 @@
             [loretile.agent-md :as export]
             [loretile.fold :as f]
             [loretile.graph-tools :as gt]
+            [loretile.ops :as ops]
             [loretile.profile :as profile]
             [loretile.rdf :as rdf]
             [loretile.schema :as schema]
             [loretile.turtle :as turtle]))
 
+;; The tests say WHAT happens — a topic accepted, an item retired — and `e`
+;; builds the `change` the app writes for it, through the app's own
+;; constructors (loretile.ops): every write is a `change` since the learning
+;; slice (wiki/Property-Graph.md, 2026-11-20). `:ev/*` keys pass through.
 (defn e [type & kvs]
-  (merge {:ev/id (str (gensym "ev")) :ev/type type :ev/ns "demo"
-          :ev/actor "denis" :ev/ts 1}
-         (apply hash-map kvs)))
+  (let [m (apply hash-map kvs)
+        body (case type
+               :change (ops/change (:ops m) (:edit m))
+               :source-added (ops/add-source (:source m))
+               :source-updated (ops/update-source (:id m) (:change m) (:concepts m))
+               :concept-proposed (ops/propose-node (:concept m) (:provenance m))
+               :concept-accepted (ops/accept-node (:concept m))
+               :concept-discarded (ops/discard-node (:id m) (:material m))
+               :concept-deprecated (ops/deprecate-node (:id m))
+               :concept-split (ops/split (:id m) (:into m) (:item-remap m) (:object-remap m))
+               :edge-proposed (ops/propose-edge (:edge m))
+               :edge-accepted (ops/accept-edge (:edge m))
+               :edge-discarded (ops/discard-edge (:edge m))
+               :object-added (ops/add-object (:object m))
+               :object-promoted (ops/object-status (:id m) :active)
+               :object-demoted (ops/object-status (:id m) :demoted)
+               :object-linked (ops/link-objects (:link m))
+               :object-unlinked (ops/unlink-objects (:link m))
+               :item-added (ops/add-item (:item m))
+               :item-accepted (ops/item-status (:id m) :active)
+               :item-retired (ops/item-status (:id m) :retired)
+               :version-created (ops/edit (:id m) (:payload m) (:change m))
+               :question-raised (ops/raise-question (:id m) (:concept-id m) (:question m))
+               :question-answered (ops/answer-question (:id m) (:answer m))
+               :cq-raised (ops/raise-cq (:cq m))
+               :cq-retired (ops/retire-cq (:id m))
+               :course-published (ops/publish-course (:course m))
+               :author-named (ops/name-author (get-in m [:author :id]) (get-in m [:author :name]))
+               :graph-owner-set (ops/set-owner (:owner m))
+               ;; a graph's ontology is a copy of an ontology graph's vocabulary
+               :profile-set (ops/change [[:graph-set {:ontology "custom" :ontology-copy (:profile m)}]]))]
+    (merge {:ev/id (str (gensym "ev")) :ev/ns "demo" :ev/actor "denis" :ev/ts 1}
+           (select-keys m [:ev/id :ev/ns :ev/actor :ev/ts :ev/recorded])
+           body)))
+
+;; does event `ev` publish a course (write a course node)?
+(defn- publishes? [ev] (some (fn [[op _ b]] (and (= :node-set op) (= :course (:is b)))) (:ops ev)))
+
+;; a vocabulary's words travel in the copy (an ontology graph's description of a type or relation)
+(defn- describe [p of id d]
+  (update p (if (= :relation of) :relations :node-types)
+          (fn [xs] (mapv #(if (= id (:id %)) (assoc % :description d) %) xs))))
 
 (defn concept [id title] {:id id :title title :definition (str title " — определение")})
 
@@ -154,10 +198,12 @@
                             :object {:id "o-t" :concept-id "group-by" :kind :explanation
                                      :level :apprentice :locale "ru" :origin :authored
                                      :audience #{"trader" "teller"} :text "…"})))
-      (is (not (schema/valid? (e :object-added
-                                 :object {:id "o-t" :concept-id "group-by" :kind :explanation
-                                          :level :apprentice :locale "ru" :origin :authored
-                                          :audience "trader" :text "…"})))))
+      ;; an object's shape is the guard's (a node of class :object), not the event schema's
+      (is (= :invalid-schema (:error (f/guard (f/kg sql-events)
+                                              (e :object-added
+                                                 :object {:id "o-t" :concept-id "group-by" :kind :explanation
+                                                          :level :apprentice :locale "ru" :origin :authored
+                                                          :audience "trader" :text "…"}))))))
     (testing "course config fields pass the schema"
       (is (schema/valid? (e :course-published
                             :course {:id "x" :title "X" :targets [["select" :novice]]
@@ -214,7 +260,8 @@
     (testing "schema violation rejected"
       (is (some? (f/guard kg (e :concept-accepted :concept {:id "x"})))))
     (testing "discarded concept never re-proposed"
-      (let [kg2 (f/kg (conj sql-events (e :concept-discarded :id "cte")))]
+      (let [kg2 (f/kg (conj sql-events (e :concept-proposed :concept (concept "cte" "CTE") :provenance :llm-drafted)
+                            (e :concept-discarded :id "cte")))]
         (is (some? (f/guard kg2 (e :concept-proposed
                                    :concept (concept "cte" "CTE")
                                    :provenance :llm-drafted))))))
@@ -235,6 +282,7 @@
                                                      :provenance :llm-drafted}))))))
     (testing "discarded edge never re-proposed"
       (let [kg2 (f/kg (conj sql-events
+                            (e :edge-proposed :edge {:from "agg" :to "join" :type :requires :provenance :llm-drafted})
                             (e :edge-discarded :edge {:from "agg" :to "join" :type :requires
                                                       :provenance :llm-drafted})))]
         (is (= :duplicate (:error (f/guard kg2 (e :edge-proposed
@@ -248,9 +296,10 @@
       (is (nil? (f/guard kg (e :edge-accepted
                                :edge {:from "select" :to "src-sql-book" :type :grounded-in
                                       :provenance :authored})))))
-    (testing "re-accepting an existing concept is rejected (edit = version-created)"
-      (is (= :exists (:error (f/guard kg (e :concept-accepted
-                                           :concept (concept "select" "SELECT again")))))))
+    (testing "accepting an existing node again only sets its properties (every write is a change)"
+      (is (nil? (f/guard kg (e :concept-accepted :concept (concept "select" "SELECT again")))))
+      (is (= "SELECT again" (get-in (f/apply-event kg (e :concept-accepted :concept (concept "select" "SELECT again")))
+                                    [:concepts "select" :title]))))
     (testing "a genuinely new proposal still passes"
       (is (nil? (f/guard kg (e :concept-proposed
                               :concept (assoc (concept "cte" "CTE") :evidence "[стр. 3] WITH …")
@@ -388,7 +437,10 @@
                 (e :version-created :entity :concept :id "nope" :change :patch :payload {:title "x"})
                 (e :source-updated :id "nope" :change :patch)]]
       (is (= :missing (:error (f/guard kg ev))) (str (:ev/type ev))))
-    (is (= :duplicate (:error (f/guard kg (e :edge-accepted :edge (assoc ed :provenance :authored :justification "ещё раз"))))))))
+    ;; one edge per key: accepting a link again sets its properties, it never draws a second line
+    (let [kg2 (f/apply-event kg (e :edge-accepted :edge (assoc ed :provenance :authored :justification "ещё раз")))]
+      (is (= (count (:edges kg)) (count (:edges kg2))))
+      (is (some #(= "ещё раз" (:justification %)) (:edges kg2))))))
 
 (deftest the-cycle-guard-is-linear
   ;; review 2026-10-16 A12: 40 diamonds were 2^40 paths for the per-path walk
@@ -520,7 +572,7 @@
   (let [objs (for [i (range 12)]
                (e :object-added :object {:id (str "o-" (- 20 i)) :concept-id "where" :kind :explanation
                                          :level :apprentice :locale "ru" :origin :authored :text "t"}))]
-    (is (= (sort (map #(get-in % [:object :id]) objs))
+    (is (= (sort (for [i (range 12)] (str "o-" (- 20 i))))
            (map :id (f/concept-objects (f/kg (into sql-events objs)) "where"))))))
 
 (deftest tokenizer-keeps-every-letter
@@ -751,9 +803,10 @@
       (is (= :unknown-node-type (:error (f/guard kg (e :concept-accepted :concept (concept "y" "Y")))))))
     (testing "the ordering relation stays a DAG"
       (is (= :requires-cycle (:error (f/guard kg (e :edge-accepted :edge {:from "checkout" :to "invoice" :type :triggers :provenance :authored}))))))
-    (testing "the ontology is chosen once, for an empty graph"
-      (is (= :profile-locked (:error (f/guard kg (e :profile-set :profile shop-profile)))))
-      (is (= :profile-locked (:error (f/guard (f/kg (rest shop-events)) (e :profile-set :profile shop-profile))))))
+    (testing "a new copy of the ontology is taken unless it drops what the data uses"
+      (is (nil? (f/guard kg (e :profile-set :profile shop-profile))))
+      (is (= :ontology-breaks-data
+             (:error (f/guard kg (e :profile-set :profile (update shop-profile :relations #(vec (remove (comp #{:triggers} :id) %)))))))))
     (testing "reserved relations are refused; an ontology without an ordering relation stands (2026-11-19)"
       (is (= :bad-profile (:error (f/guard f/empty-kg (e :profile-set :profile (update shop-profile :relations conj {:id :requires :label "x"}))))))
       (is (nil? (f/guard f/empty-kg (e :profile-set :profile (update shop-profile :relations #(mapv (fn [r] (dissoc r :ordering?)) %)))))))
@@ -818,28 +871,6 @@
     (testing "retiring drops it"
       (is (nil? (get-in (f/kg (conj events (e :cq-retired :id "cq-free"))) [:cqs "cq-free"]))))))
 
-(deftest the-ontology-grows-additively
-  (let [kg (f/kg shop-events)
-        rel {:id :measures :label "измеряет" :inverse "измеряется" :from #{:metric} :to #{:process}}]
-    (testing "a relation naming an unknown type is refused; after the type joins, it passes"
-      (is (= :bad-profile (:error (f/guard kg (e :relation-added :relation rel)))))
-      (let [kg2 (f/kg (conj shop-events (e :node-type-added :node-type {:id :metric :label "метрика"})))]
-        (is (nil? (f/guard kg2 (e :relation-added :relation rel))))
-        (let [kg3 (f/kg (into shop-events [(e :node-type-added :node-type {:id :metric :label "метрика"})
-                                           (e :relation-added :relation rel)]))]
-          (is (profile/relation (f/profile kg3) :measures))
-          (is (nil? (f/guard kg3 (e :concept-accepted :concept (typed "churn" "Отток" :metric))))))))
-    (testing "a second ordering relation, a reserved id, a duplicate are refused"
-      (is (= :bad-profile (:error (f/guard kg (e :relation-added :relation (assoc rel :from #{:process} :ordering? true))))))
-      (is (= :bad-profile (:error (f/guard kg (e :relation-added :relation {:id :requires :label "x"})))))
-      (is (= :bad-profile (:error (f/guard kg (e :relation-added :relation {:id :performs :label "x"}))))))
-    (testing "the learning profile does not grow this way"
-      (is (= :profile-locked (:error (f/guard (f/kg sql-events) (e :relation-added :relation rel))))))))
-
-;; wiki/Property-Graph.md: one `change` event for every graph; an ontology
-;; graph is an ordinary graph whose vocabulary is READ OUT of its nodes and
-;; edges; a data graph carries a copy of it and never takes one that breaks
-;; its data
 (defn- ch [& ops] (e :change :ops (vec ops)))
 (defn- ch-ops [ops] (e :change :ops (vec ops)))
 
@@ -891,7 +922,7 @@
     (testing "the structural rules hold everywhere"
       (is (= :missing-endpoint (:error (f/guard onto (ch [:edge-set "process" :x "nowhere" {}])))))
       (is (= :missing (:error (f/guard onto (ch [:node-remove "nowhere"])))))
-      (is (= :invalid-schema (:error (f/guard onto (ch [:node-set "role" {:status :deprecated}])))) "the fold's own keys are not set by ops")
+      (is (= :invalid-schema (:error (f/guard onto (ch [:node-set "role" {:version 9}])))) "the fold's own keys are not set by ops")
       (is (= :missing-endpoint (:error (f/guard onto (ch [:node-set "a" {:title "A"}] [:edge-set "a" :x "b" {}]))))
           "a change is refused whole at its first bad op"))
     (testing "an ontology graph's own nodes are never learnable"
@@ -902,7 +933,6 @@
             bound (f/kg (into [bind] (rest shop-events)))]
         (is (= {:graph "o-shop" :version "v1"} (:ontology bound)))
         (is (= 4 (count (:concepts bound))))
-        (is (= :ontology-elsewhere (:error (f/guard bound (e :node-type-added :node-type {:id :metric :label "метрика"})))))
         (testing "a node property edit passes; a kind outside the ontology does not"
           (is (nil? (f/guard bound (ch [:node-set "invoice" {:sla "2 дня" :owner "финансы"}]))))
           (is (= "2 дня" (get-in (f/kg (into [bind] (conj (vec (rest shop-events)) (ch [:node-set "invoice" {:sla "2 дня"}])))) [:concepts "invoice" :sla])))
@@ -1088,23 +1118,18 @@
   (let [inferred {:from "accountant" :to "checkout" :type :performs :provenance :llm-drafted
                   :justification "the handbook says accounting closes every order" :inferred? true}
         evs (into shop-events
-                  [(e :vocabulary-described :of :relation :id :performs :description "Роль → процесс: роль делает этот процесс.")
-                   (e :vocabulary-described :of :node-type :id :rule :description "Обязательное условие.")
+                  [(e :profile-set :profile (-> shop-profile
+                                                (describe :relation :performs "Роль → процесс: роль делает этот процесс.")
+                                                (describe :node-type :rule "Обязательное условие.")))
                    (e :graph-owner-set :owner {:team "Финансы" :contact "fin@example.com"})
                    (e :edge-accepted :edge inferred)
                    (e :object-added :object {:id "o-tol" :concept-id "invoice" :kind :explanation :level :novice :locale "ru"
                                              :text "Счёт оплачивается, если расхождение с заказом не больше 10% (tolerance)."})])
         kg (f/kg evs)]
-    (testing "a description is words on the custom vocabulary, nothing else"
+    (testing "a description is words on the vocabulary — it travels in the copy"
       (is (= "Роль → процесс: роль делает этот процесс." (:description (profile/relation (f/profile kg) :performs))))
       (is (= "Обязательное условие." (:description (profile/node-type-of (f/profile kg) :rule))))
-      (is (= :profile-locked (:error (f/guard (f/kg sql-events) (e :vocabulary-described :of :relation :id :requires :description "x")))))
-      (is (= :unknown-relation (:error (f/guard kg (e :vocabulary-described :of :relation :id :nope :description "x")))))
-      (is (= :unknown-relation (:error (f/guard kg (e :vocabulary-described :of :relation :id :grounded-in :description "x"))))
-          "the reserved source link keeps its own words")
-      (is (= :unknown-node-type (:error (f/guard kg (e :vocabulary-described :of :node-type :id :nope :description "x")))))
-      (is (nil? (:description (profile/node-type-of (f/profile (f/kg (conj evs (e :vocabulary-described :of :node-type :id :rule :description " ")))) :rule)))
-          "an empty description clears it"))
+      )
     (testing "describe-ontology: the owner first, then each word with its meaning"
       (let [d (gt/describe-ontology kg)]
         (is (str/includes? d "owner: Финансы (fin@example.com)"))
@@ -1280,7 +1305,7 @@ its processes and roles.'''@en .
     (is (thrown-with-msg? #?(:cljs js/Error :clj Exception) #"unknown prefix" (turtle/parse ":a :b :c .")))
     (is (thrown-with-msg? #?(:cljs js/Error :clj Exception) #"unclosed string" (turtle/parse "<a> <b> \"oops ."))))
   (testing "round trip: a Loretile graph's RDF export comes back as the same vocabulary"
-    (let [kg (f/kg (into shop-events [(e :vocabulary-described :of :relation :id :performs :description "Роль → процесс.")]))
+    (let [kg (f/kg (into shop-events [(e :profile-set :profile (describe shop-profile :relation :performs "Роль → процесс."))]))
           ttl (rdf/turtle kg {:title "Магазин" :base "urn:loretile:shop/" :lang "ru"})
           {:keys [profile report]} (turtle/profile (turtle/parse ttl) {:lang "ru"})
           strip (fn [p] {:types (mapv #(select-keys % [:id :label :description]) (:node-types p))
@@ -1391,7 +1416,7 @@ its processes and roles.'''@en .
                                  :item-remap {} :object-remap {} kvs))]
     (testing "each needs its subject"
       (is (= :missing (:error (f/guard kg (e :concept-deprecated :id "nope")))))
-      (is (= :missing (:error (f/guard kg (e :object-promoted :id "o-gb-1")))) "an active object is not promotable")
+      (is (nil? (f/guard kg (e :object-promoted :id "o-gb-1"))) "an active object set active again is a no-op")
       (is (nil? (f/guard (f/kg (conj sql-events (e :object-demoted :id "o-gb-1"))) (e :object-promoted :id "o-gb-1"))))
       (is (= :missing (:error (f/guard kg (e :question-answered :id "q-x" :answer "да")))))
       (let [kg2 (f/kg (conj sql-events (e :question-raised :id "q1" :concept-id "where" :question "?")))]
@@ -1399,12 +1424,11 @@ its processes and roles.'''@en .
         (is (nil? (f/guard kg2 (e :question-answered :id "q1" :answer "да"))))))
     (testing "a split may not orphan, collide or shrink to one; a course target cannot be split"
       (is (= :in-course (:error (f/guard kg (split)))))
-      (let [kg3 (f/kg (conj (vec (remove #(= :course-published (:ev/type %)) sql-events))))]
+      (let [kg3 (f/kg (conj (vec (remove publishes? sql-events))))]
         (is (nil? (f/guard kg3 (split))) "agg has no items or objects: nothing to assign")
-        (is (= {:error :bad-split :detail :fewer-than-two}
-               (f/guard kg3 (split :into [(concept "agg-basic" "COUNT/SUM")]))))
-        (is (= :id-taken (:detail (f/guard kg3 (split :into [(concept "where" "x") (concept "agg-more" "y")])))))
-        (is (= :item-unassigned (:detail (f/guard kg3 (e :concept-split :id "group-by"
+        ;; a split is ordinary ops now: the editor picks fresh ids; the rule that
+        ;; stays is the material — every object and item of the old topic goes on
+        (is (= :material-unassigned (:detail (f/guard kg3 (e :concept-split :id "group-by"
                                                          :into [(concept "g1" "A") (concept "g2" "B")]
                                                          :item-remap {"i-gb-1" "g1" "i-gb-2" "g2"}
                                                          :object-remap {"o-gb-1" "g1"})))))))
@@ -1413,7 +1437,7 @@ its processes and roles.'''@en .
         (is (= :deprecated (f/concept-status kg4 "group-by")))
         (is (not (:ready? (first (filter #(= "group-by" (:concept %)) (f/course-readiness kg4 {:targets [["group-by" :apprentice]]}))))))))
     (testing "an attempt counts for its item's CURRENT topic: a split keeps the record"
-      (let [kg5 (f/kg (conj (vec (remove #(= :course-published (:ev/type %)) sql-events))
+      (let [kg5 (f/kg (conj (vec (remove publishes? sql-events))
                             (e :concept-split :id "group-by"
                                :into [(concept "group-basics" "GROUP BY: основы") (concept "having" "HAVING")]
                                :item-remap {"i-gb-1" "group-basics" "i-gb-2" "group-basics" "i-gb-3" "having"}

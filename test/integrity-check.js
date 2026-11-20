@@ -198,7 +198,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
   await page.click('.item .form.edit button.primary'); await sleep(400);
   const log = await page.evaluate(() => loretileLogs());
   const v = log.split('{:ev/id').find((e) => e.includes('Переписанный вопрос по смыслу')) || '';
-  check(/:version-created/.test(v) && /:change :material/.test(v), '#5 it is recorded as a material version');
+  check(/:ev\/type :change/.test(v) && /:edit :material/.test(v), '#5 it is recorded as a material version');
   await page.goto(BASE + '#/c/where', { waitUntil: 'networkidle0' }); await sleep(500);
   await page.evaluate(() => document.querySelector('.lo .pt-edit').click()); await sleep(300);
   check(await page.$('.lo .form.edit input.material') !== null, '#5 so does a learning object\'s');
@@ -213,9 +213,9 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
   }, evs);
   const ev = (id, body) => `{:ev/id "${id}" :ev/ns "vineyard" :ev/actor "t" :ev/ts 9999999999 ${body}}`;
   await inject([
-    ev('t-o1', ':ev/type :object-added :object {:id "o-drafted" :concept-id "ripeness" :kind :explanation :level :apprentice :locale "ru" :origin :drafted :text "Черновик: сахар растёт, кислота падает."}'),
-    ev('t-o2', ':ev/type :object-added :object {:id "o-en" :concept-id "ripeness" :kind :explanation :level :apprentice :locale "en" :origin :authored :text "ENGLISH ONLY MATERIAL"}'),
-    ev('t-o3', ':ev/type :object-added :object {:id "o-pro" :concept-id "ripeness" :kind :explanation :level :professional :locale "ru" :origin :authored :text "ТОЛЬКО ДЛЯ ПРОФИ"}'),
+    ev('t-o1', ':ev/type :change :ops [[:node-set "o-drafted" {:is :object :concept-id "ripeness" :kind :explanation :level :apprentice :locale "ru" :origin :drafted :text "Черновик: сахар растёт, кислота падает."}]]'),
+    ev('t-o2', ':ev/type :change :ops [[:node-set "o-en" {:is :object :concept-id "ripeness" :kind :explanation :level :apprentice :locale "en" :origin :authored :text "ENGLISH ONLY MATERIAL"}]]'),
+    ev('t-o3', ':ev/type :change :ops [[:node-set "o-pro" {:is :object :concept-id "ripeness" :kind :explanation :level :professional :locale "ru" :origin :authored :text "ТОЛЬКО ДЛЯ ПРОФИ"}]]'),
   ]);
   const republish = async () => {
     await page.goto(BASE + '#/course/vineyard-season', { waitUntil: 'networkidle0' });
@@ -248,7 +248,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
   n = 0;
   while (await page.$(LIVE) && n++ < 12) await answer(!/Зрелость|Сбор урожая/.test(await liveTopic()));
   check(/Пока не сдано/.test(await feedText()), 'round 1: two misses fail the final');
-  await inject([ev('t-v1', ':ev/type :version-created :entity :object :id "o-drafted" :change :material :payload {:text "ПЕРЕПИСАНО В НОВОЙ ВЕРСИИ."}')]);
+  await inject([ev('t-v1', ':ev/type :change :edit :material :ops [[:node-set "o-drafted" {:text "ПЕРЕПИСАНО В НОВОЙ ВЕРСИИ."}]]')]);
   await republish();
   await page.goto(BASE + '#/learn/vineyard-season', { waitUntil: 'networkidle0' }); await sleep(600);
   await clickLive('.result-card button.primary');           // next round
@@ -266,7 +266,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
   await page.goto(BASE + '#/learn/vineyard-season', { waitUntil: 'networkidle0' }); await sleep(500);
   await page.click('.learn .start'); await sleep(300);
   check(await page.$('.retired-note') === null, 'a run on the current publication carries no retired note');
-  await inject([ev('t-d1', ':ev/type :concept-deprecated :id "ripeness"')]);
+  await inject([ev('t-d1', ':ev/type :change :ops [[:node-set "ripeness" {:status :deprecated}]]')]);
   await page.reload({ waitUntil: 'networkidle0' }); await sleep(600);
   const note1 = await text('.retired-note');
   check(/вывел из обращения: Зрелость: сахар и кислота/.test(note1) && /когда выйдет новая/.test(note1),
@@ -275,7 +275,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
   // (review 2026-10-16 A14) …
   const republishAs = (id, retarget) => page.evaluate((id, retarget) => {
     const log = loretileLog();
-    const pub = log.split('{:ev/id').filter((e) => /:course-published/.test(e) && /:id "vineyard-season"/.test(e)).pop();
+    const pub = log.split('{:ev/id').filter((e) => /:node-set "vineyard-season" \{/.test(e) && /:is :course/.test(e)).pop();
     let again = '{:ev/id' + pub.replace(/^ "[^"]+"/, ' "' + id + '"').replace(/\s*\]\s*$/, '');
     if (retarget) again = again.replace(/:targets \[[^]*?\]\]/, ':targets [["vine-anatomy" :apprentice]]');
     localStorage.setItem('loretile-kg-log', log.replace(/\]\s*$/, ' ' + again + ']'));
@@ -298,8 +298,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
     if (personal) await page.evaluate(() => localStorage.setItem('loretile-graphs',
       localStorage.getItem('loretile-graphs').replace('{:id "demo-vineyard"', '{:personal? true :id "demo-vineyard"')));
     await inject([
-      ev('t-g1', `:ev/type :item-added :item {:id "i-aaa-gen" :primary-concept-id "ripeness" :level :apprentice :kind :single-choice :origin :generated :locale "ru" :spec {:stem "${GEN}" :options ["да" "нет"] :key 0}}`),
-      ev('t-g2', ':ev/type :item-accepted :id "i-aaa-gen"'),
+      ev('t-g1', `:ev/type :change :ops [[:node-set "i-aaa-gen" {:is :item :primary-concept-id "ripeness" :level :apprentice :kind :single-choice :origin :generated :locale "ru" :spec {:stem "${GEN}" :options ["да" "нет"] :key 0} :status :active}]]`),
     ]);
     await republish();
     await page.goto(BASE + '#/learn/vineyard-season', { waitUntil: 'networkidle0' }); await sleep(500);

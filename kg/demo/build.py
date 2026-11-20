@@ -13,6 +13,10 @@ Russian original in a small {"ru":.., "en":.., "de":..} dict; build()
 looks the locale up and blows up loudly if a translation is missing.
 log.edn (ru) is what ships; log.ru.edn is byte-identical to it."""
 import json
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from changes import as_change  # noqa: E402
 
 T0 = 1756800000000  # 2025-09-02, one minute apart
 
@@ -22,7 +26,7 @@ def make_ev(events):
         n = len(events)
         e = {"ev/id": f"demo-{n:03d}", "ev/ns": "demo", "ev/actor": "demo-author",
              "ev/ts": T0 + n * 60000, "ev/type": ":" + type_}
-        e.update(kv)
+        as_change(e, type_, kv)
         events.append(e)
     return ev
 

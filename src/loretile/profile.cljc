@@ -1,9 +1,10 @@
 (ns loretile.profile
   "An ONTOLOGY PROFILE: the vocabulary a graph is written in (wiki/Profiles.md).
    A graph = a profile + its event log. `learning` is today's closed
-   ontology, verbatim; any other profile is supplied by the author as an
-   EDN file at graph creation and written into the log (`profile-set`),
-   so it versions and exports with the graph.
+   ontology, verbatim; any other profile is READ OUT of an ontology graph
+   (`fold/vocabulary`) and carried by the graphs that use it as a copy in
+   their log (the graph property `:ontology-copy`), so it versions and
+   exports with the graph.
 
    The learning engine reads its relations BY NAME (`:requires`,
    `:is-confused-with`, `:grounded-in`): those ids are reserved — a custom

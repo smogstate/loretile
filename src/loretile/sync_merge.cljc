@@ -26,8 +26,6 @@
                                  :graph-set (for [[k v] a] [[[:graph] k] v])
                                  nil))
                              (:ops e)))
-    :version-created (when (= :concept (:entity e))
-                       (into {} (for [[k v] (:payload e)] [[[:node (:id e)] k] v])))
     {}))
 
 (defn removes
@@ -37,8 +35,6 @@
     :change (set (keep (fn [[op a b c]]
                          (case op :node-remove [:node a] :edge-remove [:edge a b c] nil))
                        (:ops e)))
-    :concept-discarded #{[:node (:id e)]}
-    :edge-discarded (let [{:keys [from to type]} (:edge e)] #{[:edge from type to]})
     #{}))
 
 (defn- touches
@@ -48,8 +44,6 @@
         (concat (removes e)
                 (case (:ev/type e)
                   :change (mapcat (fn [[op a b c]] (when (= :edge-set op) [[:node a] [:node c]])) (:ops e))
-                  :edge-accepted (let [{:keys [from to]} (:edge e)] [[:node from] [:node to]])
-                  :version-created [[:node (:id e)]]
                   nil))))
 
 (defn rebase
@@ -120,12 +114,6 @@
                                 (:node-remove :edge-remove) [nodes edges (bump counts :removed 1)]
                                 [nodes edges counts]))
                             [nodes edges counts] (:ops e))
-                    (:concept-accepted :concept-proposed)
-                    (let [id (get-in e [:concept :id])]
-                      (if (nodes id) [nodes edges counts] [(conj nodes id) edges (bump counts :nodes 1)]))
-                    :edge-accepted [nodes (conj edges (edge-key (:edge e))) (bump counts :links 1)]
-                    :version-created [nodes edges (bump counts :props (count (:payload e)))]
-                    (:concept-discarded :edge-discarded) [nodes edges (bump counts :removed 1)]
                     [nodes edges counts])))
         [_ _ counts] (reduce tally [(set (keys (:concepts kg))) (set (map edge-key (:edges kg))) {}] remote)]
     (vec (for [k [:nodes :links :props :removed] :let [n (get counts k)] :when (pos? (or n 0))]

@@ -18,10 +18,10 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'version-'));
 fs.writeFileSync(path.join(dir, 'accounts-payable.md'), NEW);
 const ev = (id, rest) => `{:ev/id "${id}" :ev/ns "g" :ev/actor "t" :ev/ts 1 ${rest}}`;
 const LOG = '[' + [
-  ev('1', ':ev/type :source-added :source {:id "src-ap-old" :title "accounts-payable.md" :ref "src-ap-old.md"}'),
-  ev('2', ':ev/type :concept-accepted :concept {:id "tolerance" :title "Допуск 10%" :definition "Счёт может превысить заказ на 10%." :source-id "src-ap-old" :evidence "All invoices are subject to a 10% PO tolerance."}'),
-  ev('3', ':ev/type :concept-accepted :concept {:id "run" :title "Платёжный день" :definition "Платежи уходят по четвергам." :source-id "src-ap-old" :evidence "Payment Runs are completed on Thursdays."}'),
-  ev('4', ':ev/type :concept-accepted :concept {:id "inbox" :title "Почта AP" :definition "Счета присылают на почту." :source-id "src-ap-old"}'),
+  ev('1', ':ev/type :change :ops [[:node-set "src-ap-old" {:is :source :title "accounts-payable.md" :ref "src-ap-old.md"}]]'),
+  ev('2', ':ev/type :change :ops [[:node-set "tolerance" {:title "Допуск 10%" :definition "Счёт может превысить заказ на 10%." :source-id "src-ap-old" :evidence "All invoices are subject to a 10% PO tolerance." :status :accepted}]]'),
+  ev('3', ':ev/type :change :ops [[:node-set "run" {:title "Платёжный день" :definition "Платежи уходят по четвергам." :source-id "src-ap-old" :evidence "Payment Runs are completed on Thursdays." :status :accepted}]]'),
+  ev('4', ':ev/type :change :ops [[:node-set "inbox" {:title "Почта AP" :definition "Счета присылают на почту." :source-id "src-ap-old" :status :accepted}]]'),
 ].join(' ') + ']';
 
 (async () => {
@@ -55,7 +55,7 @@ const LOG = '[' + [
 
   await page.click('.card-reversion.quote-changed .reversion-material'); await sleep(300);
   await page.click('.reversion-kept-patch'); await sleep(300);
-  const ups = (await evs()).filter((x) => x.includes(':source-updated'));
+  const ups = (await evs()).filter((x) => x.includes(':updated {'));
   check(ups.some((x) => x.includes(':change :material') && x.includes('"tolerance"')), 'the changed topic is marked «the meaning changed»');
   check(ups.some((x) => x.includes(':change :patch') && x.includes('"run"')), 'the unchanged ones «just corrections», in one event');
   check(!ups.some((x) => x.includes('"inbox"')), 'and the unchecked one waits for the author');

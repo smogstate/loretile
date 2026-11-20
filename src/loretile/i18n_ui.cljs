@@ -699,6 +699,9 @@
    :ui/error-bad-object-link {:ru "Связать можно только два разных материала одной темы." :de "Verknüpfen lassen sich nur zwei verschiedene Materialien desselben Themas." :en "Only two different materials of the same topic can be linked."}
    :ui/rel-id {:ru "Идентификатор связи (его читают экспорт и агент)" :de "Kennung der Beziehung (Export und Agent lesen sie)" :en "The relation's id (exports and the agent read it)"}
    :ui/error-relation-exists {:ru "Связь «{id}» уже есть — выберите другой идентификатор" :de "Die Beziehung „{id}“ gibt es schon — wählen Sie eine andere Kennung" :en "A relation «{id}» already exists — choose another id"}
+   :ui/error-old-format {:ru "Графов в старом формате: {n} — их больше не открыть (формат событий сменился 2026-11-20). Они отложены, не удалены; загрузите демо заново или импортируйте граф, экспортированный в новом формате."
+                         :de "Graphen im alten Format: {n} — sie lassen sich nicht mehr öffnen (das Ereignisformat hat sich am 2026-11-20 geändert). Sie sind beiseitegelegt, nicht gelöscht; laden Sie die Demos neu oder importieren Sie einen Graphen im neuen Format."
+                         :en "Graphs in the old format: {n} — they can no longer be opened (the event format changed on 2026-11-20). They were set aside, not deleted; reload the demos or import a graph exported in the new format."}
    :ui/error-storage-full {:ru "Хранилище браузера переполнено — последнее изменение не сохранилось. Экспортируйте граф или удалите старые беседы"
                            :de "Browser-Speicher voll — die letzte Änderung wurde nicht gespeichert. Graph exportieren oder alte Gespräche löschen"
                            :en "Browser storage is full — the last change was not saved. Export the graph or remove old conversations"}

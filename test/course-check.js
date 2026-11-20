@@ -1,6 +1,6 @@
 // Course composition end-to-end: seed a small KG into localStorage, open
-// «Новый курс», pick two targets with levels, publish → course-published
-// lands in the log, the course panel shows per-target readiness (level-
+// «Новый курс», pick two targets with levels, publish → the course node
+// (`:is :course`) lands in the log, the course panel shows per-target readiness (level-
 // aware) and the out-of-course prerequisite, the map dims everything else.
 // Usage: serve public/, then: node test/course-check.js [baseUrl]
 
@@ -12,19 +12,20 @@ let failures = 0;
 const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); if (!ok) failures++; };
 
 // select ← where ← group-by (requires); group-by has 1 LO + 3 items at apprentice
-const ev = (n, body) => `{:ev/id "e${n}" :ev/ns "demo" :ev/actor "t" :ev/ts ${n} ${body}}`;
-const concept = (id, t) => `:ev/type :concept-accepted :concept {:id "${id}" :title "${t}" :definition "${t} — определение"}`;
-const item = (id) => `:ev/type :item-added :item {:id "${id}" :primary-concept-id "group-by" :level :apprentice :kind :cloze :locale "ru" :spec {:text "___" :key "x"}}`;
+// every seeded event is one :change with its ops
+const ev = (n, ops) => `{:ev/id "e${n}" :ev/ns "demo" :ev/actor "t" :ev/ts ${n} :ev/type :change :ops [${ops}]}`;
+const concept = (id, t) => `[:node-set "${id}" {:title "${t}" :definition "${t} — определение" :status :accepted}]`;
+const item = (id) => `[:node-set "${id}" {:is :item :primary-concept-id "group-by" :level :apprentice :kind :cloze :locale "ru" :spec {:text "___" :key "x"} :status :active}]`;
 const SEED = '[' + [
   ev(1, concept('select', 'SELECT')),
   ev(2, concept('where', 'WHERE')),
   ev(3, concept('group-by', 'GROUP BY')),
-  ev(4, ':ev/type :edge-accepted :edge {:from "where" :to "select" :type :requires :provenance :authored}'),
-  ev(5, ':ev/type :edge-accepted :edge {:from "group-by" :to "where" :type :requires :provenance :authored}'),
-  ev(6, ':ev/type :object-added :object {:id "o1" :concept-id "group-by" :kind :explanation :level :apprentice :locale "ru" :origin :authored :text "..."}'),
-  ev(7, item('i1')), ev(8, ':ev/type :item-accepted :id "i1"'),
-  ev(9, item('i2')), ev(10, ':ev/type :item-accepted :id "i2"'),
-  ev(11, item('i3')), ev(12, ':ev/type :item-accepted :id "i3"'),
+  ev(4, '[:edge-set "where" :requires "select" {:provenance :authored}]'),
+  ev(5, '[:edge-set "group-by" :requires "where" {:provenance :authored}]'),
+  ev(6, '[:node-set "o1" {:is :object :concept-id "group-by" :kind :explanation :level :apprentice :locale "ru" :origin :authored :text "..."}]'),
+  ev(7, item('i1')),
+  ev(8, item('i2')),
+  ev(9, item('i3')),
 ].join(' ') + ']';
 
 (async () => {
@@ -117,8 +118,8 @@ const SEED = '[' + [
   await page.click('.course-summary button.primary');
   await sleep(300);
   { const h = await page.evaluate(() => location.hash); check(/#\/course\/sql-/.test(h), 'publish navigates to the course [' + h + ']'); }
-  check(/course-published/.test(await page.evaluate(() => loretileLog())),
-    'course-published event in the log');
+  check((await page.evaluate(() => loretileLog())).split('[:node-set ').slice(1).some((o) => o.includes(':is :course')),
+    'the published course is in the log');
   check(/1 \/ 1 готовы/.test(await page.$eval('.panel-head', (e) => e.textContent)), 'course panel: every target ready');
   check(/порог сдачи 80%/.test(await page.$eval('.panel', (e) => e.textContent)), 'threshold shown');
   check(/Пререквизиты вне курса \(2\)/.test(await page.$eval('.panel', (e) => e.textContent)),

@@ -13,3 +13,4 @@ public/js/*
 # browser checks write these on every run — local artefacts, never committed
 test/shot-*.png
 .cpcache/
+__pycache__/

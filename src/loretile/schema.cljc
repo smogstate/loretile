@@ -93,83 +93,54 @@
    [:tuple [:= :edge-set] :string :keyword :string [:map-of :keyword :any]]
    [:tuple [:= :edge-remove] :string :keyword :string]])
 
+(def course-payload
+  [:map [:id :string] [:title :string]
+   [:targets [:vector [:tuple :string level]]]
+   [:locale {:optional true} :string]           ; which pools/objects it deals
+   [:pass-threshold {:optional true} :int]      ; overall %, wiki/MVP.md
+   [:diagnostic-items {:optional true} :int]
+   [:final-items {:optional true} :int]
+   [:series {:optional true} :string]])
+
+;; a COMPETENCY QUESTION: what the graph must be able to answer. Its :pattern
+;; is the query that answers it — a relation from a node type — so the fold
+;; can CHECK it over the graph, not a model
+(def cq-payload
+  [:map [:id :string] [:question :string]
+   [:pattern {:optional true}
+    ;; :inverse? = the node is the relation's `to` end («who performs X?»)
+    [:map [:relation :keyword] [:from-type {:optional true} :keyword]
+     [:inverse? {:optional true} :boolean]]]])
+
+(def class-schemas
+  "What a node of each class must hold (wiki/Property-Graph.md, the learning
+   slice): checked on the node as it would stand after a node-set."
+  {:object object-payload
+   :item item-payload
+   :source [:map [:id :string] [:title :string] [:ref {:optional true} :string]]
+   :question [:map [:id :string] [:concept-id :string] [:question :string] [:answer {:optional true} :string]]
+   :course course-payload
+   :cq cq-payload})
+
+(defn node-problem
+  "Why a node of class `cls` does not hold its shape, or nil."
+  [cls m]
+  (when-let [s (class-schemas cls)]
+    (when-not (m/validate s m) (some-> (m/explain s m) me/humanize))))
+
+(defn object-link-type? [t] (m/validate object-link-type t))
+
 (def events
-  {;; the graph's ontology, first in a custom graph's log; absent = learning
-   :profile-set        (ev :profile-set :profile profile/schema)
-   ;; THE PROPERTY-GRAPH CORE (wiki/Property-Graph.md): one generic event,
-   ;; a list of operations applied atomically and guarded together. Meaning
-   ;; lives in properties. Every graph names its ontology in `:ontology`:
-   ;; absent = the built-in learning one, "ontology" = the built-in one for
-   ;; describing vocabularies (nodes are types, edges relations, with their
-   ;; words and flags as edge properties), any other = a graph of the set,
-   ;; carried as `:ontology-copy` at `:ontology-version`. `:color-scheme`
-   ;; names how its map is drawn. A nil value removes a property.
-   :change             (ev :change :ops [:vector {:min 1} change-op])
-   ;; the ontology grows ADDITIVELY (wiki/Profiles.md, competency questions):
-   ;; a relation or node type may join a custom profile any time; nothing
-   ;; in use is ever removed
-   :relation-added     (ev :relation-added :relation profile/relation-schema)
-   :node-type-added    (ev :node-type-added :node-type profile/node-type-schema)
-   ;; one sentence a model reads: what a node type or relation means (empty
-   ;; clears it). Words only — the meaning of an edge in the log never moves
-   :vocabulary-described (ev :vocabulary-described :of [:enum :relation :node-type] :id :keyword
-                             :description :string)
-   ;; who answers for the graph: a team and how to reach it (Netflix UDA,
-   ;; 2026-10-21 — every domain model there has an owner). Any graph, any profile
-   :graph-owner-set    (ev :graph-owner-set :owner [:map [:team [:string {:min 1}]]
-                                                   [:contact {:optional true} :string]])
-   ;; the name behind an author id (2026-10-21: every change was «denis»).
-   ;; :ev/actor is a stable per-device id; this event, in the graph's own
-   ;; log, says whose it is, so an exported graph still names its authors.
-   ;; Only an author names themself (the guard)
-   :author-named       (ev :author-named :author [:map [:id :string] [:name [:string {:min 1}]]])
-   ;; a COMPETENCY QUESTION: what the graph must be able to answer. Its
-   ;; :pattern is the query that answers it — a relation from a node type —
-   ;; so the fold can CHECK it over the graph, not a model
-   :cq-raised          (ev :cq-raised :cq [:map [:id :string] [:question :string]
-                                          [:pattern {:optional true}
-                                           ;; :inverse? = the node is the relation's `to` end («who performs X?»)
-                                           [:map [:relation :keyword] [:from-type {:optional true} :keyword]
-                                            [:inverse? {:optional true} :boolean]]]])
-   :cq-retired         (ev :cq-retired :id :string)
-   :concept-proposed   (ev :concept-proposed :concept concept-payload :provenance provenance)
-   :concept-accepted   (ev :concept-accepted :concept concept-payload)
-   :concept-discarded  (ev :concept-discarded :id :string)
-   :concept-deprecated (ev :concept-deprecated :id :string)
-   :concept-split      (ev :concept-split :id :string
-                           :into [:vector concept-payload]
-                           :item-remap [:map-of :string :string]
-                           :object-remap [:map-of :string :string])
-   :edge-proposed      (ev :edge-proposed :edge edge-payload)
-   :edge-accepted      (ev :edge-accepted :edge edge-payload)
-   :edge-discarded     (ev :edge-discarded :edge edge-payload)
-   :object-added       (ev :object-added :object object-payload)
-   :object-promoted    (ev :object-promoted :id :string)
-   :object-demoted     (ev :object-demoted :id :string)
-   :object-linked      (ev :object-linked :link object-link)
-   :object-unlinked    (ev :object-unlinked :link object-link)
-   :item-added         (ev :item-added :item item-payload)
-   :item-accepted      (ev :item-accepted :id :string)
-   :item-retired       (ev :item-retired :id :string)
-   :version-created    (ev :version-created :entity [:enum :object :item :concept]
-                           :id :string :change [:enum :patch :material]
-                           :payload :map)
-   :source-added       (ev :source-added :source [:map [:id :string] [:title :string]
-                                                  [:ref {:optional true} :string]])
-   ;; :concepts scopes it to those topics — the re-upload card asks per topic
-   ;; (decided 2026-10-02, #7); absent = every topic written from the source
-   :source-updated     (conj (ev :source-updated :id :string :change [:enum :patch :material])
-                             [:concepts {:optional true} [:vector :string]])
-   :question-raised    (ev :question-raised :id :string :concept-id :string :question :string)
-   :question-answered  (ev :question-answered :id :string :answer :string)
-   :course-published   (ev :course-published :course
-                           [:map [:id :string] [:title :string]
-                            [:targets [:vector [:tuple :string level]]]
-                            [:locale {:optional true} :string]           ; which pools/objects it deals
-                            [:pass-threshold {:optional true} :int]      ; overall %, wiki/MVP.md
-                            [:diagnostic-items {:optional true} :int]
-                            [:final-items {:optional true} :int]
-                            [:series {:optional true} :string]])})
+  {;; THE PROPERTY-GRAPH CORE (wiki/Property-Graph.md): the ONE event, a list
+   ;; of operations applied atomically and guarded together. Meaning lives in
+   ;; properties; a node's `:is` names its class (absent = an ordinary node).
+   ;; Every graph names its ontology in `:ontology`: absent = the built-in
+   ;; learning one, "ontology" = the built-in one for describing vocabularies,
+   ;; any other = a graph of the set, carried as `:ontology-copy` at
+   ;; `:ontology-version`. A nil value removes a property. `:edit` marks an
+   ;; edit's level for publish and pin.
+   :change (conj (ev :change :ops [:vector {:min 1} change-op])
+                 [:edit {:optional true} [:enum :patch :material]])})
 
 (defn valid? [e] (when-let [s (get events (:ev/type e))] (m/validate s e)))
 

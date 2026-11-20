@@ -49,7 +49,7 @@ Learning platform: knowledge graph of small learning objects, per-learner master
 
 CLJS SPA, kintale toolchain: shadow-cljs + reagent + malli. `npm run dev` → http://localhost:8291 (`make engines` once first; `npm run dev` alone does not copy PGlite/Pyodide).
 
-- `schema.cljc` — malli event schemas, the one contract · `fold.cljc` — the KG IS a fold over events; guards run before append · `store.cljs` — event logs in memory, saved to IndexedDB (registry + settings in localStorage), several graphs, export/import log.edn
+- `schema.cljc` — the ONE event (`change`) and the class shapes, the one contract · `ops.cljc` — every kind of write, as a `change` · `fold.cljc` — the KG IS a fold over changes, nodes filed by `:is`; guards run before append · `store.cljs` — event logs in memory, saved to IndexedDB (registry + settings in localStorage), several graphs, export/import log.edn
 - `profile.cljc` — ontology profiles (`learning` built in) · `graph_tools.cljc` — the read tools shared by the in-app assistant and `mcp.cljs` (read-only stdio MCP server, `make mcp`) · `agent_md.cljc` — markdown export for an agent
 - `ui.cljs` — map, panels, course panel, catalog, `#/ontology`, `#/settings` · `chat.cljs` + `llm.cljs` — the assistant (intake, interview, gaps, probe, build-from-material), BYOK · `session.cljs` — assistant sittings
 - `server/` — the optional Loretile server (Clojure, JDK `HttpServer` on virtual threads): serves `public/`, holds the LLM gateway token and the S3 merge bucket behind `api/`; `config.clj` is the ONE list of settings (EDN file at `LORETILE_CONFIG`, file:// or s3://, re-read every 10s; every key overridable from env, `[:llm :token-ttl-ms]` → `LLM_TOKEN_TTL_MS`). It writes `<meta name="loretile-backend">` into index.html; `llm/backend` reads it — absent (every zip/tar.gz), the app stays browser-only with BYOK.
@@ -57,7 +57,7 @@ CLJS SPA, kintale toolchain: shadow-cljs + reagent + malli. `npm run dev` → ht
 
 ## Rules an edit can break
 
-- **Every event passes schema + guard before append**; imported logs are validated event by event. New event → schema, guard, fold, a writer in the UI (the loretile graph's `check-cqs` asks «which module writes this event?»).
+- **Every event is a `change`, built by `ops.cljc`, and passes schema + guard before append**; imported logs are validated event by event. A new kind of write → an `ops` constructor, its rule in `fold/op-problem` (or `change-problem` for the whole change), a class shape in `schema/class-schemas` if it is a new class, a writer in the UI (the loretile graph's `check-cqs` asks «which module makes this kind of write?»). Never write a raw old-style event (`:concept-accepted` …): the schema refuses it, and a seeded log containing one is set aside at load.
 - **Every storage write goes through `store/write!`** (localStorage) **or `store/save-log!`** (a graph's log, IndexedDB) — both report failure into `last-error`; graph switches abort on a failed shelf write — a swallowed quota error once destroyed the open graph. Checks read logs through `window.loretileLog(id?)` / `loretileLogs()`, never raw storage.
 - **i18n**: every UI string via `(t :ui/…)` / `(t :chat/…)` with ru+de+en; LLM prompts stay Russian, marked `;; i18n-ignore`; closed vocabularies via `i18n/enum-label`, NEVER `(name kind)` in the DOM. Gate `node test/i18n-check.js` (in `make test`).
 - **New content in the graph's language**: stamp `:locale (store/locale-for-new)`; never hardcode "ru" (a course deals only items in its own locale).

@@ -54,9 +54,10 @@ async function passTriage(page, what = 'content', ontology = 'learning') {
 
 // THE DROPPED DOOR, kept for checks until slice 3 of wiki/Ontology-Graph.md
 // replaces it with the assistant's cards: an ontology file (edn or Turtle)
-// → a graph carrying that ontology in its own log (moved over to an
-// ontology graph at the next load). Drives store internals: DEV BUILD ONLY —
-// returns null on a release build so the check can skip.
+// → an ontology graph «Онтология: {title}» made from it, and a graph
+// {title} bound to it (every graph's vocabulary lives in an ontology graph
+// since the learning slice, 2026-11-20). Drives store internals: DEV BUILD
+// ONLY — returns null on a release build so the check can skip.
 async function graphFromOntologyFile(page, file, title) {
   const text = fs.readFileSync(file, 'utf8');
   return page.evaluate((text, fname, title) => {
@@ -65,7 +66,10 @@ async function graphFromOntologyFile(page, file, title) {
     const r = loretile.store.read_profile(text, fname);
     const err = get(r, kw('error'));
     if (err) { cljs.core.reset_BANG_(loretile.store.last_error, err); return false; }
-    loretile.store.new_graph_BANG_(title, cljs.core.PersistentArrayMap.fromArray([kw('profile'), get(r, kw('profile'))], true));
+    const oid = loretile.store.new_ontology_graph_BANG_('Онтология: ' + title, get(r, kw('profile')));
+    const gid = loretile.store.new_graph_BANG_(title);
+    const bad = loretile.store.bind_BANG_(gid, oid);
+    if (bad) { cljs.core.reset_BANG_(loretile.store.last_error, bad); return false; }
     location.hash = '#/';
     return true;
   }, text, path.basename(file), title);

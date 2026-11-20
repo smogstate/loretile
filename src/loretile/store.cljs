@@ -9,6 +9,7 @@
             [reagent.core :as r]
             [loretile.agent-md :as export]
             [loretile.fold :as fold]
+            [loretile.ops :as ops]
             [loretile.profile :as profile]
             [loretile.rdf :as rdf]
             [loretile.schema :as schema]
@@ -85,8 +86,12 @@
 (defn- idb-open []
   (js/Promise.
    (fn [ok no]
-     (let [r (.open js/indexedDB "loretile" 1)]
-       (set! (.-onupgradeneeded r) #(.createObjectStore (.-result r) "logs"))
+     ;; version 2: an "aside" store for logs in the old event format
+     (let [r (.open js/indexedDB "loretile" 2)]
+       (set! (.-onupgradeneeded r)
+             (fn [] (let [d (.-result r)]
+                      (doseq [st ["logs" "aside"]]
+                        (when-not (.contains (.-objectStoreNames d) st) (.createObjectStore d st))))))
        (set! (.-onsuccess r) #(ok (.-result r)))
        (set! (.-onerror r) #(no (.-error r)))))))
 
@@ -129,6 +134,23 @@
        (doseq [[gid evs] logs] (.put st (pr-str evs) gid))
        (set! (.-oncomplete tx) ok)
        (set! (.-onabort tx) #(no (.-error tx)))))))
+
+(defn- old-format?
+  "A log written before every event was a `change` (the learning slice,
+   2026-11-20) — not read any more (Denis: no backward compatibility)."
+  [evs]
+  (boolean (some #(not= :change (:ev/type %)) evs)))
+
+(defn- set-aside!
+  "Old-format logs leave the graph list: kept whole in the \"aside\" store
+   (an insurance, never read), removed from the logs."
+  [logs]
+  (try
+    (let [tx (.transaction @db #js ["aside" "logs"] "readwrite")]
+      (doseq [[gid evs] logs]
+        (.put (.objectStore tx "aside") (pr-str evs) gid)
+        (.delete (.objectStore tx "logs") gid)))
+    (catch :default _ nil)))
 
 (defn- drop-log! [gid]
   (try (.delete (.objectStore (.transaction @db "logs" "readwrite") "logs") gid) (catch :default _ nil)))
@@ -177,27 +199,39 @@
    KEPT, and every edit is refused with the storage banner — never lost."
   []
   (let [cur (read-ls current-key "demo")
-        {:keys [keys logs]} (ls-logs cur)]
+        ;; `ls-keys`, never `keys`: a local named keys shadowed clojure.core/keys below
+        {ls-keys :keys logs :logs} (ls-logs cur)]
     (-> (idb-open)
         (.then (fn [d] (reset! db d) (idb-read)))
         (.then (fn [stored]
                  ;; localStorage's copies go only once IndexedDB has them
                  (-> (idb-put-all logs)
-                     (.then #(doseq [k keys] (js/localStorage.removeItem k)))
+                     (.then #(doseq [k ls-keys] (js/localStorage.removeItem k)))
                      (.catch #(reset! last-error {:error :storage-full :detail "indexeddb"}))
                      (.then (constantly (merge stored logs))))))
         (.catch (fn [_] (reset! last-error {:error :storage-full :detail "indexeddb"}) logs))
         (.then (fn [all]
-                 (reset! shelf (dissoc all cur))
-                 (reset! events (vec (get all cur [])))
-                 (load-registry!))))))
+                 (let [old (into {} (filter (comp old-format? val)) all)
+                       all (apply dissoc all (keys old))]
+                   (when (seq old)
+                     (when @db (set-aside! old))
+                     (reset! last-error {:error :old-format :detail (count old)}))
+                   (reset! shelf (dissoc all cur))
+                   (reset! events (vec (get all cur [])))
+                   (load-registry! (set (keys old)))
+                   ;; the registry may open ANOTHER graph (the saved one was set
+                   ;; aside, or is unknown): its log becomes the working copy —
+                   ;; keeping the old one would save it over that graph's log
+                   (when (not= cur @current)
+                     (reset! events (vec (get @shelf @current [])))
+                     (swap! shelf dissoc @current))))))))
 
-(defn- load-registry! []
+(defn- load-registry! [gone]
   ;; migration: a pre-multi-graph install has a working copy and no
   ;; registry — it becomes the first graph, keeping its id so the ev/ns
   ;; already stamped on its events still matches
-  (let [reg (read-ls graphs-key nil)
-        gs (or reg [{:id "demo" :title (i18n/t :ui/graph-first)}])
+  (let [reg (some->> (read-ls graphs-key nil) (remove #(gone (:id %))) vec)
+        gs (or (not-empty reg) [{:id "demo" :title (i18n/t :ui/graph-first)}])
         cur (read-ls current-key "demo")]
     ;; a `current` outside the registry made the open graph invisible to the
     ;; catalog and unreachable from the drawer. Its log is the working copy:
@@ -208,7 +242,7 @@
           gs (cond-> gs orphan? (conj {:id cur :title (i18n/t :ui/graph-recovered)}))]
       (reset! graphs gs)
       (reset! current (if (or known? orphan?) cur (:id (first gs))))
-      (when (or orphan? (not reg)) (persist-registry!)))))
+      (when (or orphan? (empty? reg) (seq gone)) (persist-registry!)))))
 
 (defn watch-other-tabs!
   "Two tabs share one origin and one storage. Without this they overwrite
@@ -272,12 +306,10 @@
    the open graph could not be shelved. `personal?` marks a learner's own
    graph (built from their material): what they accept there is `generated`
    (ruling 2026-10-02) and it stays private (decision #1)."
-  [title & [{:keys [personal? profile]}]]
+  [title & [{:keys [personal?]}]]
   (let [id (str "g-" (.toString (js/Date.now) 36))]
     (when (and (shelve! @current @events)
                (open! id [] (conj @graphs (cond-> {:id id :title title} personal? (assoc :personal? true)))))
-      ;; a custom ontology (wiki/Profiles.md) is the FIRST event of its log
-      (when profile (append! {:ev/type :profile-set :profile profile}))
       ;; the title is a graph property too, so it travels with the log (a
       ;; server lists graphs by it — wiki/Graph-Sync.md)
       (append! {:ev/type :change :ops [[:graph-set {:title title}]]})
@@ -389,7 +421,12 @@
   []
   (let [{:keys [id name]} @author]
     (when (and (seq name) (not= name (get-in (kg) [:authors id])))
-      (append! {:ev/type :author-named :author {:id id :name name}}))))
+      (append! (ops/name-author id name)))))
+
+(defn- naming?
+  "Is `e` the change that names an author (it must not name one first)?"
+  [e]
+  (some (fn [[op a]] (and (= :graph-set op) (contains? a :authors))) (:ops e)))
 
 ;; undo / redo (2026-11-20): this session's own edits, per graph, newest
 ;; last. An undo is a NEW change (fold/undo-ops) — the log stays append-only.
@@ -404,7 +441,7 @@
   (if @as-of
     (do (reset! last-error {:error :past-view}) @last-error)
   (do
-  (when-not (= :author-named (:ev/type e)) (name-author!))
+  (when-not (naming? e) (name-author!))
   ;; the device's id is kept from its first change on
   (when (nil? (read-ls author-key nil)) (write! author-key (pr-str @author)))
   (let [e (cond-> (merge {:ev/id (str (random-uuid)) :ev/ns @current
@@ -583,7 +620,8 @@
    and copy it to every graph bound to it (slice 4: a missing type joins the
    ontology from a data graph's intake). nil on success, else the error."
   [oid ops]
-  (let [err (append-to-log! oid (stamp oid {:ev/type :change :ops ops}))]
+  ;; a vector: callers build ops with concat, and the schema refuses a seq
+  (let [err (append-to-log! oid (stamp oid {:ev/type :change :ops (vec ops)}))]
     (when (nil? err) (sync-bound! oid))
     err))
 
@@ -662,24 +700,6 @@
     (when (and (shelve! @current @events)
                (open! id [e] (conj @graphs {:id id :title title :ontology fold/types-ontology})))
       id)))
-
-(defn migrate-ontologies!
-  "Once per graph: a graph that carries its own custom ontology (`profile-set`,
-   the pre-2026-11-19 shape) gets an ontology graph made from it and is bound
-   to it — the vocabulary moves, the data graph keeps a copy."
-  []
-  (doseq [{:keys [id title ontology]} @graphs
-          :when (not ontology)
-          :let [kg (fold/kg (graph-events id)) p (:profile kg)]
-          :when (and p (not (profile/learning? p)) (not (:ontology kg)) (not (:ontology-graph? kg)))]
-    (let [oid (str "o-" id)
-          t (str (i18n/t :ui/ontology-of) " " title)
-          e (stamp oid {:ev/type :change
-                        :ops (into [[:graph-set {:ontology fold/types-ontology :title t}]] (vocabulary-ops p))})]
-      (when (and (not (some #(= oid (:id %)) @graphs)) (shelve! oid [e]))
-        (reset! graphs (conj @graphs {:id oid :title t :ontology fold/types-ontology}))
-        (persist-registry!)
-        (bind! id oid)))))
 
 (defn- download! [text type fname]
   (let [a (js/document.createElement "a")]

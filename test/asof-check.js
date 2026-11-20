@@ -50,7 +50,7 @@ const TZ = 'UTC';
   await page.evaluate(() => {
     // the log is one pr-str'd vector; an event's keys print in insertion order
     const log = loretileLog();
-    const re = /:ev\/ts \d+(, :ev\/type :concept-accepted, :concept \{:id "window")/;
+    const re = /:ev\/ts \d+(, :ev\/type :change, :ops \[\[:node-set "window" )/;
     if (!re.test(log)) throw new Error('the window topic was not found in the demo log');
     localStorage.setItem('loretile-kg-log', log.replace(re, ':ev/ts 1756803600000, :ev/recorded 1756809000000$1'));
   });
@@ -85,8 +85,7 @@ const TZ = 'UTC';
   const refused = await page.evaluate(() => {
     const s = window.loretile && window.loretile.store;
     if (!s) return 'no-dev';
-    const k = window.cljs.core.keyword;
-    const r = s.append_BANG_(window.cljs.core.hash_map(k('ev/type'), k('question-raised'), k('id'), 'q-asof', k('concept-id'), 'select', k('question'), '?'));
+    const r = s.append_BANG_(window.cljs.reader.read_string('{:ev/type :change :ops [[:node-set "q-asof" {:is :question :concept-id "select" :question "?"}]]}'));
     return r ? 'refused' : 'written';
   });
   check(refused !== 'written', 'a write in the past is refused (' + refused + ')');

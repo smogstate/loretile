@@ -269,8 +269,8 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
   await page.evaluate(() => {
     const log = loretileLog();
     const ev = '{:ev/id "legacy-course" :ev/ns "demo-sql" :ev/actor "import" :ev/ts 1 '
-      + ':ev/type :course-published :course {:id "legacy" :title "Ввезённый курс" '
-      + ':targets [["tables" :apprentice] ["select" :apprentice]] :locale "ru" :pass-threshold 80}}';
+      + ':ev/type :change :ops [[:node-set "legacy" {:is :course :title "Ввезённый курс" '
+      + ':targets [["tables" :apprentice] ["select" :apprentice]] :locale "ru" :pass-threshold 80}]]}';
     localStorage.setItem('loretile-kg-log', log.replace(/\]\s*$/, ' ' + ev + ']'));
   });
   await page.goto(BASE + '#/learn/legacy', { waitUntil: 'networkidle0' });
