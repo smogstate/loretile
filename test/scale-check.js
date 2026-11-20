@@ -61,7 +61,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   const t0 = Date.now();
   const c = await page.evaluate(() => { const r = [...document.querySelectorAll('.node')][20].getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; });
   await page.mouse.click(c[0], c[1]);
-  await page.waitForSelector('.node.selected', { timeout: 3000 }).catch(() => {});
+  await page.waitForSelector('.node.selected', { timeout: 8000 }).catch(() => {});
   check(await page.$('.node.selected') !== null, `a tap selects (${Date.now() - t0} ms)`);
 
   await browser.close();

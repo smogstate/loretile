@@ -3,7 +3,8 @@
 // reaches the server; B opens it from «На сервере»; an edit in either reaches
 // the other; the same property set two ways becomes a CONFLICT CARD for a
 // person, and «оставить моё» wins for both; a node edited by B but removed
-// by A comes back on «вернуть и оставить моё».
+// by A comes back on «вернуть и оставить моё»; an ontology changed on one
+// device reaches the graphs bound to it on the other.
 // Usage (dev or release bundle in public/): node test/sync-check.js
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
@@ -104,10 +105,15 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     check((await pills(A)).length === 0, 'the pills fade after 8 s');
 
     // the same property set two ways: a conflict card for the one who syncs second
+    // A stores first, THEN B edits (B has not pulled A's value: a real clash).
+    // Appending both before syncing raced: B's own push timer (~2 s after an
+    // edit) could land B's value first under load, and the card went to A
     await append(A, `{:ev/type :change :ops [[:node-set "${nid}" {:stage "черновик"}]]}`);
+    await syncNow(A);
     await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:stage "готово"}]]}`);
-    await syncNow(A); await syncNow(B);
-    await B.goto(BASE + '#/chat', { waitUntil: 'networkidle0' }); await sleep(600);
+    await syncNow(B);
+    await B.goto(BASE + '#/chat', { waitUntil: 'networkidle0' });
+    await B.waitForSelector('.card-conflict', { timeout: 8000 }).catch(() => {});
     const card = await B.$eval('.card-conflict', (e) => e.textContent).catch(() => '');
     check(/stage/.test(card) && /черновик/.test(card) && /готово/.test(card), 'B gets a conflict card: theirs «черновик», mine «готово»');
     check(await B.$('.nav-chat .conflict-badge') !== null, 'and a badge on the assistant');
@@ -122,15 +128,55 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
 
     // A removes the node B is editing: B decides to bring it back
     await append(A, `{:ev/type :change :ops [[:node-remove "${nid}"]]}`);
+    await syncNow(A);
     await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:priority "высокий"}]]}`);
-    await syncNow(A); await syncNow(B);
-    await B.goto(BASE + '#/chat', { waitUntil: 'networkidle0' }); await sleep(600);
+    await syncNow(B);
+    await B.goto(BASE + '#/chat', { waitUntil: 'networkidle0' });
+    await B.waitForSelector('.card-conflict', { timeout: 8000 }).catch(() => {});
     check(/удалил/.test(await B.$eval('.card-conflict', (e) => e.textContent).catch(() => '')), 'B is told the node it changed was removed');
     await B.click('.card-conflict .conflict-mine'); await sleep(500); await syncNow(B);
     await syncNow(A);
     await A.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(800);
     check(await A.evaluate(() => document.querySelectorAll('.node').length) === 3 && /:priority "высокий"/.test(await log(A)),
       '«вернуть и оставить моё» brings it back for both, with B\'s edit');
+
+    // an ONTOLOGY changed on one device reaches the graphs bound to it on another
+    // (2026-11-20): B pulls the ontology graph, and its own bound graph takes the copy
+    const made = await A.evaluate(() => {
+      const S = loretile.store, rd = cljs.reader.read_string;
+      const oid = S.new_ontology_graph_BANG_('Общая онтология', null);
+      S.append_BANG_(rd('{:ev/type :change :ops [[:node-set "process" {:title "процесс"}]]}'));
+      return oid;
+    });
+    await syncNow(A);
+    const dgid = await A.evaluate((oid) => {
+      const S = loretile.store;
+      const gid = S.new_graph_BANG_('Данные по онтологии');
+      const bad = S.bind_BANG_(gid, oid);
+      return bad ? null : gid;
+    }, made);
+    await syncNow(A);
+    check(!!dgid, 'A binds a data graph to its ontology graph; both reach the server');
+    const openOnB = async (title) => {
+      await B.goto(BASE + '#/graphs', { waitUntil: 'networkidle0' });
+      await B.waitForSelector('.server-graphs .server-row', { timeout: 8000 }).catch(() => {});
+      await B.evaluate((t) => { const r = [...document.querySelectorAll('.server-graphs .server-row')].find((x) => x.textContent.includes(t)); if (r) r.querySelector('.open-server').click(); }, title);
+      await sleep(1200);
+    };
+    await openOnB('Общая онтология');
+    await openOnB('Данные по онтологии');
+    check(/:label "процесс"|:title "процесс"/.test(await log(B)) && (await B.evaluate(() => localStorage.getItem('loretile-graphs'))).includes(`:ontology "${made}"`),
+      'B opens both; its copy of the data graph is bound to the ontology graph');
+    await A.evaluate((oid) => {
+      loretile.store.switch_graph_BANG_(oid);
+      loretile.store.append_BANG_(cljs.reader.read_string('{:ev/type :change :ops [[:node-set "role" {:title "роль"}]]}'));
+    }, made);
+    await syncNow(A);
+    await B.evaluate((oid) => loretile.store.switch_graph_BANG_(oid), made);
+    await syncNow(B);
+    const bData = await B.evaluate((gid) => loretileLog(gid), dgid);
+    check(/:ontology-copy \{[^]*:label "роль"/.test(bData),
+      'A adds a type to the ontology; when B syncs the ontology graph, B\'s bound data graph takes the new copy');
   } finally {
     await browser.close();
     server.kill();
