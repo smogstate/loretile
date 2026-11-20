@@ -1,0 +1,35 @@
+;; Loretile server config. Point LORETILE_CONFIG at it (file:///etc/loretile.edn
+;; or s3://bucket/loretile.edn); it is re-read every :config :reload-ms.
+;; Every key can be set from the environment instead: the path joined with _,
+;; upper-cased — [:llm :token-ttl-ms] is LLM_TOKEN_TTL_MS. Environment wins.
+{:server {:port 8080                      ; read at start only
+          :public-dir "public"}
+ :config {:reload-ms 10000}
+ :app    {:demos true}                    ; false: no demo graphs offered
+
+ :llm {:url "https://llm-gateway.example/v1/chat/completions"
+       :shape :openai-compat              ; or :anthropic (the gateway speaks /v1/messages)
+       :model "qwen3-235b"
+       ;; :max-output 16000               ; longest reply the model allows
+       ;; :embed-url "https://llm-gateway.example/v1/embeddings"
+       ;; :embed-model "text-embedding"
+       :timeout-ms 300000
+
+       ;; the token — one of:
+       ;; :token "static-token"
+       ;; :token-provider corp.auth/llm-token      ; a function on the classpath
+       :token-provider-file "file:///etc/loretile/token.clj"  ; last form is (fn [] …)
+       ;; the function returns a string, or {:token … :expires-at inst|epoch-ms}
+       ;; or {:token … :expires-in-ms n}; without an expiry:
+       :token-ttl-ms 3600000
+       :auth-header "Authorization"
+       :auth-prefix "Bearer "}
+
+ ;; merge files: merges/{graph-id}/*.edn under this bucket and prefix
+ :merges {:url "s3://loretile-merges"}
+
+ ;; S3 client for the config file and the merges (credentials: the AWS
+ ;; default chain — IAM role, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY…)
+ :aws {:region "eu-central-1"
+       ;; :endpoint "https://storage.yandexcloud.net"   ; any S3-compatible store
+       }}

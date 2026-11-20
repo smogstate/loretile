@@ -44,16 +44,28 @@
 
 (def ^:private store-key "loretile-llm-config")
 
+(defonce backend
+  ;; served by the Loretile server (server/), index.html carries
+  ;; <meta name="loretile-backend" content="{:shape … :model …}">: calls go to
+  ;; its api/, which holds the gateway and its token. Absent — the static
+  ;; build — the key lives in this browser as before.
+  (some-> (js/document.querySelector "meta[name=loretile-backend]")
+          (.getAttribute "content")
+          reader/read-string))
+
 (defn config []
-  (try (some-> (or (js/localStorage.getItem store-key)
-                   (js/localStorage.getItem "tessella-llm-config"))   ; pre-rename key
-               reader/read-string)
-       (catch :default _ nil)))
+  (if backend
+    (cond-> (assoc (select-keys backend [:shape :model :max-output]) :url "api/llm")
+      (:embed-model backend) (assoc :embed-url "api/embed" :embed-model (:embed-model backend)))
+    (try (some-> (or (js/localStorage.getItem store-key)
+                     (js/localStorage.getItem "tessella-llm-config"))   ; pre-rename key
+                 reader/read-string)
+         (catch :default _ nil))))
 
 (defn save-config! [cfg]
   (js/localStorage.setItem store-key (pr-str cfg)))
 
-(defn ready? [] (boolean (some-> (config) :key seq)))
+(defn ready? [] (boolean (or backend (some-> (config) :key seq))))
 
 (defn- parse-json [s] (js->clj (js/JSON.parse s) :keywordize-keys true))
 
@@ -147,7 +159,7 @@
 
 (defn embeddings? []
   (let [{:keys [embed-url embed-model key]} (config)]
-    (boolean (and (seq embed-url) (seq embed-model) (seq key)))))
+    (boolean (and (seq embed-url) (seq embed-model) (or backend (seq key))))))
 
 (defn embed!
   "texts → promise of vectors (JS arrays), OpenAI-shaped /embeddings.
@@ -163,8 +175,8 @@
               (let [n (atom est)]
               (-> (js/fetch embed-url
                             (clj->js {:method "POST"
-                                      :headers {"content-type" "application/json"
-                                                "authorization" (str "Bearer " key)}
+                                      :headers (cond-> {"content-type" "application/json"}
+                                                 key (assoc "authorization" (str "Bearer " key)))
                                       :body (js/JSON.stringify
                                              (clj->js {:model embed-model :input batch}))}))
                   (p/then (fn [r] (if (.-ok r)
@@ -186,7 +198,7 @@
    read in 32 small parts, at 16k in 3. A provider that still cuts the
    reply short gets the part read again in halves (chat/send!)."
   []
-  (or (get-in presets [(:preset (config)) :max-output]) max-reply-tokens))
+  (or (:max-output backend) (get-in presets [(:preset (config)) :max-output]) max-reply-tokens))
 
 (defn chat!
   "system+user → promise of raw text. Provider chosen by saved config.
@@ -204,14 +216,14 @@
         [headers body]
         (case shape
           :anthropic
-          [{"content-type" "application/json"
-            "x-api-key" key
-            "anthropic-version" "2023-06-01"
-            "anthropic-dangerous-direct-browser-access" "true"}
+          [(cond-> {"content-type" "application/json"
+                    "anthropic-version" "2023-06-01"}
+             key (assoc "x-api-key" key
+                        "anthropic-dangerous-direct-browser-access" "true"))
            {:model model :max_tokens cap :system system
             :messages [{:role "user" :content user}]}]
-          [{"content-type" "application/json"
-            "authorization" (str "Bearer " key)}
+          [(cond-> {"content-type" "application/json"}
+             key (assoc "authorization" (str "Bearer " key)))
            {:model model :max_tokens cap
             :messages [{:role "system" :content system}
                        {:role "user" :content user}]}])]

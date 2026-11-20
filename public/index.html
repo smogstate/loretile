@@ -6,10 +6,11 @@
 <!-- Security review 2026-10-03: no injected external script runs (script-src
      'self'); exercise engines live in the sandbox frame, not here. 'unsafe-eval'
      is for the pdf.js dynamic import; 'unsafe-inline' style for reagent's style
-     attributes; connect-src https: is the user's own model endpoint. Clickjacking
+     attributes; connect-src https: is the user's own model endpoint, 'self' the Loretile
+     server's api/ when it serves the app. Clickjacking
      (frame-ancestors) and transport (HSTS) can't be set in a meta tag; the init
      frame-buster covers the first. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; frame-src 'self'; connect-src https: http://localhost:* blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; frame-src 'self'; connect-src 'self' https: http://localhost:* blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Loretile</title>
 <link rel="icon" type="image/svg+xml" href="icon.svg">
 <link rel="stylesheet" href="css/driver.css">

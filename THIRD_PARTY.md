@@ -2,8 +2,8 @@
 
 | Path | Project | Licence |
 |---|---|---|
-| `public/js/pdf.min.mjs`, `public/js/pdf.worker.min.mjs` | [pdf.js](https://github.com/mozilla/pdf.js) 6.3.289, Mozilla Foundation | Apache-2.0 (notice in file header) |
-| `public/css/driver.css` | [driver.js](https://github.com/kamranahmedse/driver.js) 1.8.0, Kamran Ahmed | MIT |
+| `public/js/pdf.min.mjs`, `public/js/pdf.worker.min.mjs` | [pdf.js](https://github.com/mozilla/pdf.js) 6.5.438, Mozilla Foundation | Apache-2.0 (notice in file header) |
+| `public/css/driver.css` | [driver.js](https://github.com/kamranahmedse/driver.js) 1.14.0, Kamran Ahmed | MIT |
 | some icon paths in `src/loretile/icons.cljs` (e.g. `:link`, `:pin`) | [Lucide](https://github.com/lucide-icons/lucide) / [Feather](https://github.com/feathericons/feather) | ISC (Lucide) / MIT (Feather) — texts below |
 | `test/data/208topics.csv`, `test/data/prerequisite_annotation.csv` | [LectureBank](https://github.com/Yale-LILY/LectureBank) (`LB-Paper/`), Yale LILY Lab | No licence stated upstream; included unmodified for the prerequisite benchmark (`test/edge-bench.js`). Cite: Li et al., *What Should I Learn First: Introducing LectureBank for NLP Education and Prerequisite Chain Learning*, AAAI 2019. |
 

@@ -51,6 +51,7 @@ CLJS SPA, kintale toolchain: shadow-cljs + reagent + malli. `npm run dev` → ht
 - `schema.cljc` — malli event schemas, the one contract · `fold.cljc` — the KG IS a fold over events; guards run before append · `store.cljs` — event logs in localStorage, several graphs, export/import log.edn
 - `profile.cljc` — ontology profiles (`learning` built in) · `graph_tools.cljc` — the read tools shared by the in-app assistant and `mcp.cljs` (read-only stdio MCP server, `make mcp`) · `agent_md.cljc` — markdown export for an agent
 - `ui.cljs` — map, panels, course panel, catalog, `#/ontology`, `#/settings` · `chat.cljs` + `llm.cljs` — the assistant (intake, interview, gaps, probe, build-from-material), BYOK · `session.cljs` — assistant sittings
+- `server/` — the optional Loretile server (Clojure, JDK `HttpServer` on virtual threads): serves `public/`, holds the LLM gateway token and the S3 merge bucket behind `api/`; `config.clj` is the ONE list of settings (EDN file at `LORETILE_CONFIG`, file:// or s3://, re-read every 10s; every key overridable from env, `[:llm :token-ttl-ms]` → `LLM_TOKEN_TTL_MS`). It writes `<meta name="loretile-backend">` into index.html; `llm/backend` reads it — absent (every zip/tar.gz), the app stays browser-only with BYOK.
 - `learn.cljs` — learner loop as a feed · `exercise.cljs` — executed exercises (PGlite, Pyodide workers; `public/js/pyrunner.js`, `pgrunner.js`) · `tools.cljs` / `tool_defs.cljs` / `guide.cljs` — tool registry, tools, learner-mode assistant · `tour.cljs` · `vectors.cljs` · `i18n*.cljs`
 
 ## Rules an edit can break
@@ -65,6 +66,7 @@ CLJS SPA, kintale toolchain: shadow-cljs + reagent + malli. `npm run dev` → ht
 - **Intake is two-step**: concepts first, then the model judges engine-proposed pairs (`fold/edge-candidates`) — never free-form edges over a document.
 - **Exercise verdicts run in a clean, locked-down worker** (`ex/judged`); never weaken the lockdown in `pyrunner.js` / `pgrunner.js` (wiki/Security-Review-2026-10-03.md).
 - **Tools show a model question counts, never stems, options or keys.** The MCP server has no write tool.
+- **Two modes, one bundle**: backend mode is ONLY the `loretile-backend` meta the server injects — never write it into `public/index.html` or a zip; in that mode key and bucket settings are absent (`llm/backend`). The server's settings live only in `server/src/loretile/server/config.clj` `spec`.
 - **Every model call goes through `llm/admit`** (daily token budget, fails closed).
 - **Generated files — edit the generator, rerun, commit the output**: demo graphs `kg/demo/build*.py` → `kg/demo/*.edn` (served as `public/demo/`) (translations inline, same ids across locales); the codebase graph `python3 kg/loretile/build.py` → `kg/loretile/loretile.edn` — `make test` runs `--check` and FAILS when it no longer matches the code (requires, event writers, storage keys, docstrings, checks). Rerun it after changing any of those.
 - **Keep `wiki/Code.md` current**: a new feature or a changed decision gets its paragraph there (and a rule here only if an edit elsewhere can break it).
@@ -87,6 +89,7 @@ CLJS SPA, kintale toolchain: shadow-cljs + reagent + malli. `npm run dev` → ht
 
 - Publishing a GitHub release runs `.github/workflows/release.yml` → `make test smoke dist dist-enterprise smoke-enterprise` → `dist/loretile-app-<tag>.zip` and `dist/loretile-app-<tag>-enterprise.zip` (no demo graphs: `<meta name="loretile-demos" content="off">` in index.html makes every demo control absent) attached to the release.
 - `.github/workflows/build.yml` (public repo only): every push to master there — i.e. every `make publish` — tags `0.{commits}.{tags already on the commit}` (first build `.0`), runs the same gates, and releases both bundles as tar.gz; a failed build drops its tag.
+- `Dockerfile` → the app with its server, `docker run -p 8080:8080 -e LORETILE_CONFIG=… ghcr.io/smogstate/loretile:<version>`; `build.yml` pushes it beside the tar.gz. Settings: `server/config.example.edn`. `make server CONFIG=…` runs it locally; `node test/server-check.js` (after `make release`) checks backend mode, the token refresh and the env overrides.
 - `make deploy` → landing at https://loretile.com + app at /app/. COMMIT BEFORE DEPLOYING — main.js is cache-busted by the git short hash and deploy refuses a dirty tree. App asset paths are document-relative. No new deps without need.
 
 **This project does not use Loom** — ignore the workspace-level Loom instructions here.

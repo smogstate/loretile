@@ -1,4 +1,4 @@
-.PHONY: install engines dev release test mcp smoke dist dist-enterprise smoke-enterprise check-landing clean-tree deploy deploy-landing cert-status publish
+.PHONY: install engines dev release test mcp server docker smoke dist dist-enterprise smoke-enterprise check-landing clean-tree deploy deploy-landing cert-status publish
 
 # loretile.com — Object Storage website bucket behind Yandex Cloud DNS
 # (zone loretile-com: ANAME apex → bucket, _acme-challenge CNAMEs → managed
@@ -49,6 +49,15 @@ test:
 mcp:
 	npx shadow-cljs release mcp
 	@node test/mcp-check.js
+
+# The Loretile server (server/, wiki: CLAUDE.md § Release and deploy) over
+# public/ — CONFIG=file:///path/config.edn or s3://…; settings also from env
+server: release
+	cd server && SERVER_PUBLIC_DIR=$(CURDIR)/public LORETILE_CONFIG=$(CONFIG) clojure -M -m loretile.server.main
+
+# The same as one image: the app with its server, run with a config
+docker:
+	docker build -t loretile:$(VERSION) .
 
 # The app as one zip — exactly the files `make deploy` uploads (bundle, css,
 # pdf.js, both runners, the PGlite + Pyodide engines, the nine demo logs,

@@ -21,6 +21,7 @@
             [loretile.chat :as chat]
             [loretile.fold :as fold]
             [loretile.i18n :as i18n :refer [t]]
+            [loretile.llm :as llm]
             [loretile.profile :as profile]
             [loretile.schema :as schema]
             [loretile.store :as store]))
@@ -31,9 +32,13 @@
 (declare refresh!)
 
 (defn url
-  "The bucket's address (path- or host-style), or nil when merging is not set up."
+  "The bucket's address (path- or host-style), or nil when merging is not
+   set up. Behind the Loretile server it is the server's api/merges, which
+   reads the bucket of its own config."
   []
-  (some-> (.getItem js/localStorage url-key) str/trim not-empty))
+  (if llm/backend
+    (when (:merges? llm/backend) "api/merges")
+    (some-> (.getItem js/localStorage url-key) str/trim not-empty)))
 
 (defn set-url! [u]
   (store/write! url-key (str/trim (str u)))

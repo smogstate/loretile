@@ -304,7 +304,10 @@
         ;; when a colour is chosen (React's onChange fires on every step)
         ^{:key (str "c" (:color style))}
         [:input.prop-color {:type "color" :default-value (or (:color style) "#8a8a8a")
-                            :ref (fn [el] (when el (set! (.-onchange el) #(put! {:color (.. % -target -value)}))))}]
+                            :ref (fn [el]
+                                   (when el (set! (.-onchange el) #(put! {:color (.. % -target -value)})))
+                                   ;; React 19 runs a function returned by a ref as its cleanup
+                                   nil)}]
         (t :ui/prop-color)]
        (when (:color own)
          [:button.style-reset {:title (t :ui/style-reset) :aria-label (t :ui/style-reset) :on-click #(put! {:color nil})}
@@ -2152,7 +2155,7 @@
       :group (t :ui/hat-author)
       :hint (if (:current? s) (t :ui/session-now) (t :ui/session-word))
       :run #(do (chat/open-past! s) (goto! "#/chat"))})
-   (for [[k v] llm/presets]
+   (for [[k v] (when-not llm/backend llm/presets)]
      {:label (t :ui/model-label {"{label}" (:label v)})
       :icon :gear
       :hint (when (= k (:preset (llm/config))) (t :ui/current-hint))
@@ -2458,7 +2461,7 @@
   (let [{:keys [tokens calls corrupt]} (llm/usage) budget (llm/daily-budget)]
     [:section.budget
      [:h3 (t :ui/budget-heading)]
-     [:p.muted (t :ui/budget-lead)]
+     (when-not llm/backend [:p.muted (t :ui/budget-lead)])
      [:input.budget-input {:type "number" :min 1000 :step 10000 :default-value budget
                            :on-change #(llm/set-daily-budget! (js/parseInt (.. % -target -value)))}]
      [:p.muted.budget-usage (t :ui/budget-usage {"{used}" tokens "{budget}" budget "{calls}" calls})]
@@ -2938,17 +2941,22 @@
        [:button {:class (when (= theme-val @theme) "on") :on-click #(set-theme! theme-val)} (t label-key)])]]
    [:section
     [:h3 [icons/icon :chat] (t :ui/assistant-heading)]
-    [chat/config-fields]]
+    (if llm/backend
+      [:p.muted (t :chat/model-prefix) (:model (llm/config))]
+      [chat/config-fields])]
    [budget-section]
    [author-section]
-   [:section.merges
-    [:h3 [icons/icon :inbox] (t :ui/merges)]
-    [:p.muted (t :ui/merges-lead)]
-    [:input.merge-url {:type "url" :default-value (mrg/url) :placeholder (t :ui/merge-url-placeholder)
-                       :on-change #(mrg/set-url! (.. % -target -value))}]
-    (cond
-      @mrg/error [:p.key-status.bad (t :ui/merge-error {"{e}" @mrg/error})]
-      (mrg/url) [:p.muted (t :ui/merge-count {"{n}" (count (mrg/pending))})])]])
+   (when (or (not llm/backend) (mrg/url))
+     [:section.merges
+      [:h3 [icons/icon :inbox] (t :ui/merges)]
+      (when-not llm/backend
+        [:<>
+         [:p.muted (t :ui/merges-lead)]
+         [:input.merge-url {:type "url" :default-value (mrg/url) :placeholder (t :ui/merge-url-placeholder)
+                            :on-change #(mrg/set-url! (.. % -target -value))}]])
+      (cond
+        @mrg/error [:p.key-status.bad (t :ui/merge-error {"{e}" @mrg/error})]
+        (mrg/url) [:p.muted (t :ui/merge-count {"{n}" (count (mrg/pending))})])])])
 
 (defn drawer []
   (when @drawer-open

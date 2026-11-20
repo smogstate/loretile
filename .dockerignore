@@ -1,0 +1,11 @@
+node_modules
+.shadow-cljs
+out
+dist
+.git
+public/js/*
+!public/js/pdf.min.mjs
+!public/js/pdf.worker.min.mjs
+!public/js/pyrunner.js
+!public/js/pgrunner.js
+server/.cpcache

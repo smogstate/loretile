@@ -1,6 +1,7 @@
 # Every push to master becomes a release 0.{commits from root}.{tags on this
 # commit}: the commit is tagged first, then built and gated like
-# release.yml, and both bundles are attached as tar.gz.
+# release.yml, and both bundles are attached as tar.gz. The image with the
+# server (Dockerfile) goes to ghcr.io as :<version> and :latest.
 name: Build release
 
 on:
@@ -10,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: build-release
@@ -41,13 +43,13 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
 
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 25
 
       - uses: actions/cache@v6
         with:
@@ -66,6 +68,22 @@ jobs:
         run: |
           tar -czf "loretile-app-$V.tar.gz" "loretile-app-$V"
           tar -czf "loretile-app-$V-enterprise.tar.gz" "loretile-app-$V-enterprise"
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Image
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker build -t "$image:$V" -t "$image:latest" .
+          docker push "$image:$V"
+          docker push "$image:latest"
 
       - name: Release
         env:
