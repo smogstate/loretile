@@ -799,3 +799,4 @@ select.node-type { margin-bottom: 8px; }
 @keyframes peer-in { from { opacity: 0; transform: translateX(12px); } }
 @media (max-width: 600px) { .peer-pills { right: 64px; bottom: 72px; } .peer-pill { width: 190px; } }
 .relation-props .rel-id { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; margin: 0 8px 0 0; padding: 4px 8px; flex: 1; min-width: 0; }
+.chat-lead .row { margin-top: 12px; }

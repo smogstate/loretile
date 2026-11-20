@@ -221,9 +221,11 @@
    :chat/compose-profile {:ru "Записать онтологию" :de "Ontologie festlegen" :en "Write the ontology"}
    :chat/onto-accept-first {:ru "Сначала примите хотя бы один вопрос." :de "Nehmen Sie zuerst mindestens eine Frage an." :en "Accept at least one question first."}
    :chat/onto-problems {:ru "Онтология пока не сходится: " :de "Die Ontologie geht noch nicht auf: " :en "The ontology does not hold together yet: "}
-   :chat/onto-done {:ru "Онтология записана: типов узлов — {t}, связей — {r}, вопросов компетенции — {q}. Теперь присылайте документы или добавляйте узлы на карте; пробелы считаются на странице «Онтология»."
-                    :de "Ontologie festgelegt: {t} Knotentypen, {r} Relationen, {q} Kompetenzfragen. Jetzt Dokumente schicken oder Knoten auf der Karte anlegen; Lücken zählt die Seite „Ontologie“."
-                    :en "Ontology written: {t} node types, {r} relations, {q} competency questions. Now send documents or add nodes on the map; gaps are counted on the Ontology page."}
+   :chat/onto-done {:ru "Онтология «{title}» создана: типов узлов — {t}, связей — {r}, вопросов компетенции — {q}. Граф теперь на ней; ваши ответы читаю как его содержимое — узлы и связи придут карточками."
+                    :de "Ontologie „{title}“ angelegt: {t} Knotentypen, {r} Relationen, {q} Kompetenzfragen. Der Graph nutzt sie jetzt; Ihre Antworten lese ich als seinen Inhalt — Knoten und Verbindungen kommen als Karten."
+                    :en "Ontology «{title}» created: {t} node types, {r} relations, {q} competency questions. The graph now uses it; I'm reading your answers as its content — nodes and links will come as cards."}
+   :chat/interview-door {:ru "Построить граф в разговоре" :de "Den Graphen im Gespräch aufbauen" :en "Build the graph by talking"}
+   :chat/interview-answers {:ru "Ответы в разговоре" :de "Antworten im Gespräch" :en "Answers in the conversation"}
    ;; --- gaps the competency questions leave (wiki/Profiles.md §CQ) ---
    :chat/gaps-tag {:ru "Пробелы" :de "Lücken" :en "Gaps"}
    :chat/gaps-lead {:ru "Узлов без ответа: {n}, вопросов: {m}. Считает граф, не модель; ассистент может поискать ответ в источнике узла или среди существующих узлов."

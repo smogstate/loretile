@@ -1971,19 +1971,23 @@
                                      (= ord (:id r)) (assoc :ordering? true))))}))
 
 (defn compose-profile!
-  "The accepted competency questions become the graph's ontology: one
-   `profile-set`, then one `cq-raised` per question so every relation is
-   born justified. Refused (shown) when the profile is unsound or the graph
-   already has content."
+  "The accepted competency questions become an ONTOLOGY GRAPH (the interview
+   door, 2026-11-20): «Онтология: …» with the types and relations they imply
+   and one `cq-raised` per question, so every relation is born justified;
+   the graph the interview ran in is bound to it, and what the author told
+   the interview is then read as that graph's content — node and link cards
+   through the usual two-step intake. Refused (shown) when the vocabulary
+   is unsound."
   []
   (let [o @onto
+        home (:graph o)
         p (derive-profile o)]
     (cond
       (empty? (:accepted o)) (swap! msgs conj {:who :sys :text (t :chat/onto-accept-first)})
       (profile/problems p) (swap! msgs conj {:who :sys :text (str (t :chat/onto-problems) (pr-str (profile/problems p)))})
-      (not (store/append-to? (:graph o))) (refuse-foreign!)
+      (not (store/append-to? home)) (refuse-foreign!)
       :else
-      (when (nil? (store/append! {:ev/type :profile-set :profile p}))
+      (when-let [oid (store/new-ontology-graph! (str (t :ui/ontology-of) " " (or (not-empty (:title o)) (store/graph-title home))) p)]
         (doseq [{:keys [question relation asks-from]} (:accepted o)]
           (let [inverse? (boolean (and asks-from (contains? (:to relation) asks-from)
                                        (not (contains? (:from relation) asks-from))))]
@@ -1993,9 +1997,17 @@
                                                     asks-from (assoc :from-type asks-from)
                                                     inverse? (assoc :inverse? true))})})))
         (swap! cards (fn [cs] (vec (remove #(#{:profile-next :cq} (:card %)) cs))))
-        (swap! msgs conj {:who :sys :text (t :chat/onto-done {"{t}" (count (:node-types p)) "{r}" (count (:relations p))
-                                                               "{q}" (count (:accepted o))})})
-        (reset! onto nil)))))
+        (store/switch-graph! home)
+        (if-let [err (store/bind! home oid)]
+          (do (reset! store/last-error err) (reset! onto nil))
+          (let [answers (str/join "\n\n" (for [m @msgs :when (= :user (:who m))] (:text m)))]
+            (swap! msgs conj {:who :sys :text (t :chat/onto-done {"{title}" (store/graph-title oid)
+                                                                   "{t}" (count (:node-types p)) "{r}" (count (:relations p))
+                                                                   "{q}" (count (:accepted o))})})
+            (reset! onto nil)
+            ;; the answers named real things (people, systems, steps): read them as content
+            (when (seq answers)
+              (content-intake! home {:name (t :chat/interview-answers) :text answers} nil))))))))
 
 (defn- rel-label
   "A relation named on a card: the dictionary's word in learning, the
@@ -2805,7 +2817,13 @@
        [:div.msgs
         ;; an empty sitting says what it is for (UX review 2026-10-02 #8)
         (when (and (empty? @msgs) (empty? @cards) (not @busy))
-          [:div.msg.msg-llm.chat-lead (t :chat/lead)])
+          [:div.msg.msg-llm.chat-lead (t :chat/lead)
+           ;; the interview door (2026-11-20): nothing open, no document yet —
+           ;; the graph can be built by talking (types, then content)
+           (when (and (nothing-open?) (llm/ready?) (not @onto))
+             [:div.row
+              [:button.primary.interview-door {:on-click #(start-ontology-interview! @store/current)}
+               [icons/icon :chat] (t :chat/interview-door)]])])
         (for [[i m] (map-indexed vector @msgs)]
           ^{:key i} [:div {:class (str "msg msg-" (name (:who m)))} (:text m)])
         (when @busy

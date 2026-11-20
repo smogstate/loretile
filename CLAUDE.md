@@ -28,7 +28,7 @@ Learning platform: knowledge graph of small learning objects, per-learner master
 | Graphs kept by the server: local-first sync, pending edits rebased on others', conflicts as assistant cards, «На сервере» in the Graphs view | `wiki/Code.md#the-server-optional-backend` | `wiki/Graph-Sync.md` | sync, server, `sync_merge_test` |
 | What a model reads: descriptions, owner, inferred links, RDF export | `wiki/Code.md#what-a-model-reads` | `wiki/Profiles.md` § What a model reads | meaning, gaps, fold_test |
 | Authors: who added and changed what (`:ev/actor`, `author-named`, Settings name) | `wiki/Code.md#authors` | `wiki/Profiles.md` § What a model reads | author, fold_test |
-| Competency questions · interview · gaps card · probe | `wiki/Code.md#competency-questions` | `wiki/Profiles.md` § Competency questions | ontology, interview, gaps, probe |
+| Competency questions · interview (the interview door: build by talking → an ontology graph + content cards) · gaps card · probe | `wiki/Code.md#competency-questions` | `wiki/Profiles.md` § Competency questions | ontology, interview, gaps, probe |
 | MCP server · the loretile graph | `wiki/Code.md#the-mcp-server` | `wiki/Profiles.md` § Dogfood | `make mcp`, `build.py --check`, fold_test `loretile-graph-is-sound` |
 | The four events (answer, promote, split, deprecate) | `wiki/Code.md#the-four-events-nothing-wrote` | `wiki/Data-Model.md` | topic-actions, fold_test `the-four-events-have-guards` |
 | Tools, one assistant by screen, guide, actions | `wiki/Code.md#tools--one-assistant-mode-by-screen` | `wiki/Assistant.md` · `wiki/Assistant-Design-2026-10-02.md` | tools, guide, build |

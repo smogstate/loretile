@@ -50,18 +50,15 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   });
   await page.reload({ waitUntil: 'networkidle0' }); await sleep(400);
 
-  // a new graph with the assistant's interview. Its drawer door is gone (2026-11-19);
-  // slice 3 of wiki/Ontology-Graph.md folds the interview into the assistant's one
-  // door — until then the store and chat path is driven directly (dev build only)
-  const started = await page.evaluate(() => {
-    if (typeof loretile === 'undefined' || !loretile.chat || !loretile.chat.start_ontology_interview_BANG_) return null;
-    const id = loretile.store.new_graph_BANG_('Как работает магазин');
-    loretile.chat.start_ontology_interview_BANG_(id);
-    location.hash = '#/chat';
-    return true;
-  });
-  if (started === null) { console.log('SKIP: release build — the interview door is internal until slice 3'); await browser.close(); process.exit(0); }
-  await sleep(800);
+  // THE INTERVIEW DOOR (2026-11-20): nothing open, no document — the assistant's
+  // opening offers to build the graph by talking
+  await page.goto(BASE + '#/chat', { waitUntil: 'networkidle0' }); await sleep(500);
+  check(await page.$('.chat-lead .interview-door') !== null, 'nothing open: the assistant offers to build the graph by talking');
+  await page.screenshot({ path: 'test/shot-interview-door.png' });
+  await page.setViewport({ width: 390, height: 800 }); await sleep(300);
+  await page.screenshot({ path: 'test/shot-interview-door-phone.png' });
+  await page.setViewport({ width: 1280, height: 900 }); await sleep(300);
+  await page.click('.chat-lead .interview-door'); await sleep(600);
   check(/#\/chat/.test(await page.evaluate(() => location.hash)), 'the interview opens in the chat');
   check(/режим онтологии/.test(await text('.chat-head')), 'the composer wears the ontology badge');
   check(/Для чего он/.test((await msgs()).join(' ')), 'the assistant opens with the first question');
@@ -99,20 +96,30 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await sleep(200);
   check(await page.$('.card-cq') === null, 'all four decided');
   check(/Принято вопросов: 3/.test(await text('.card-profile-next')), 'the step counts the accepted ones');
-  await page.click('.compose-profile'); await sleep(600);
-  const log = await page.evaluate(() => loretileLog());
-  check(/:profile-set/.test(log), 'the ontology is written');
-  check((log.match(/:cq-raised/g) || []).length === 3, 'with one competency question per accepted card');
-  check(!/:costs/.test(log), 'the discarded question left no relation behind');
-  check(/:inverse\? true/.test(log), 'a question asked from the receiving end is checked from there');
-  check(/Онтология записана: типов узлов — 3, связей — 3/.test((await msgs()).join(' ')), 'the sitting reports what it wrote');
+  // what the author said is then read as the graph's content: the next model call
+  await page.evaluate(() => { window.__calls = []; window.__script = [{ concepts: [
+    { id: 'priemka', title: 'Приёмка товара', type: 'process', definition: 'Кладовщик принимает товар от поставщика.' }] }]; });
+  await page.click('.compose-profile'); await sleep(1500);
+  const reg = await page.evaluate(() => localStorage.getItem('loretile-graphs'));
+  const oid = (reg.match(/:id "([^"]+)", :title "Онтология: Как работает магазин", :ontology "ontology"/) || [])[1];
+  check(!!oid, 'the questions became an ontology graph «Онтология: Как работает магазин»');
+  const olog = await page.evaluate((id) => loretileLog(id), oid || '');
+  check((olog.match(/:cq-raised/g) || []).length === 3, 'with one competency question per accepted card, raised there');
+  check(!/:costs/.test(olog), 'the discarded question left no relation behind');
+  check(/:inverse\? true/.test(olog), 'a question asked from the receiving end is checked from there');
+  const hlog = await page.evaluate(() => loretileLog());
+  check(hlog.includes(':ontology "' + oid + '"'), 'the graph the interview ran in is bound to it');
+  check(/Онтология «Онтология: Как работает магазин» создана: типов узлов — 3, связей — 3/.test((await msgs()).join(' ')), 'the sitting reports what it made');
   check(!/режим онтологии/.test(await text('.chat-head')), 'and returns to the author mode');
+  const read = await page.evaluate(() => window.__calls[0] || { user: '' });
+  check(/Ответы в разговоре/.test(read.user) && /Для агента-программиста/.test(read.user), 'the answers are read as the graph\'s content');
+  check(/Приёмка товара/.test(await text('.chat')), 'and come back as node cards');
 
   // the ontology page shows what the interview produced; nothing is answered yet
   await page.goto(BASE + '#/ontology', { waitUntil: 'networkidle0' }); await sleep(300);
   const onto = await text('.ontology-page');
-  check(/процесс/.test(onto) && /performs/.test(onto) && /triggers/.test(onto), 'the ontology page lists the vocabulary');
-  check((await page.$$('.cq-row')).length === 3, 'and the three questions');
+  check(/процесс/.test(onto) && /выполняет/.test(onto) && /запускает/.test(onto), 'the graph\'s ontology page lists the vocabulary');
+  check((await page.$$('.cq-row')).length === 3, 'and the three questions, inherited from the ontology');
   check(!/ни один вопрос не требует/.test(onto), 'every relation is justified by a question');
 
   await page.screenshot({ path: 'test/shot-interview.png' });
