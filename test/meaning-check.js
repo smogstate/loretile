@@ -33,7 +33,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
     await page.keyboard.press('Backspace');
   };
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log') || '');
+  const log = () => page.evaluate(() => loretileLog() || '');
   const download = async (sel) => {
     await page.evaluate(() => { window.__blob = null; });
     // exports live on each graph's row in the Graphs view (2026-11-19)

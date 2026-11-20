@@ -49,7 +49,7 @@ const TZ = 'UTC';
   // one demo topic («window») given a foreign clock: made at 09:00, taken in at 10:30
   await page.evaluate(() => {
     // the log is one pr-str'd vector; an event's keys print in insertion order
-    const log = localStorage.getItem('loretile-kg-log');
+    const log = loretileLog();
     const re = /:ev\/ts \d+(, :ev\/type :concept-accepted, :concept \{:id "window")/;
     if (!re.test(log)) throw new Error('the window topic was not found in the demo log');
     localStorage.setItem('loretile-kg-log', log.replace(re, ':ev/ts 1756803600000, :ev/recorded 1756809000000$1'));
@@ -93,7 +93,7 @@ const TZ = 'UTC';
   await sleep(300);
   const banner = await page.$eval('.error', (e) => e.textContent).catch(() => '');
   if (refused === 'refused') check(/прошлое состояние/.test(banner), 'and the banner says so: ' + banner);
-  check(!/q-asof/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))), 'nothing landed in the log');
+  check(!/q-asof/.test(await page.evaluate(() => loretileLog())), 'nothing landed in the log');
 
   // the second clock: the late event was MADE at 09:00 but KNOWN only at 10:30
   // (the map remounted behind the topic popup, so the popover is closed again)

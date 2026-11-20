@@ -17,10 +17,10 @@
   ;; hostile page can't trick taps on «Принять» or delete through an iframe
   (if-not (identical? js/window.top js/window.self)
     (set! (.. js/document -body -textContent) "Loretile cannot run inside a frame.")
-    (do
-  (store/load!)
+    ;; the logs come out of IndexedDB first (async)
+    (.then (store/load!) (fn []
   (store/migrate-ontologies!)
-  (sync/start!)                     ; graphs kept by the server: local-first sync (wiki/Graph-Sync.md)       ; a graph carrying its own ontology gets an ontology graph (wiki/Ontology-Graph.md)
+  (sync/start!)                     ; graphs kept by the server: local-first sync (wiki/Graph-Sync.md)
   (vectors/load!)
   (chat/restore!)
   (mrg/refresh!)                    ; merge files waiting for the open graph
@@ -31,4 +31,4 @@
   (js/window.addEventListener "hashchange" ui/read-route!)
   (ui/global-keys!)
   (reset! root (rdc/create-root (js/document.getElementById "app")))
-  (rdc/render @root [ui/app]))))
+  (rdc/render @root [ui/app])))))

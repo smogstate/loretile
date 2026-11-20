@@ -44,7 +44,7 @@ fs.writeFileSync(other, '# Посторонний\n\nТекст.\n');
   page.on('dialog', (d) => d.accept(d.type() === 'prompt' ? 'Чужой граф' : undefined));
   await page.setViewport({ width: 1280, height: 900 });
   const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
-  const log = () => page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).map((k) => localStorage.getItem(k)).join('\n'));
+  const log = () => page.evaluate(() => loretileLogs());
   const upload = async (file) => {
     const input = await page.$('.chat-attach input[type=file]');
     await input.uploadFile(file);
@@ -129,7 +129,7 @@ fs.writeFileSync(other, '# Посторонний\n\nТекст.\n');
   check(/В этой беседе есть неразобранные предложения для графа «[^»]+»/.test(await text('.chat .msgs')), 'attaching a file there is refused, pointing at «Открыть граф» or a new conversation');
   check(await page.$('.card-foreign') !== null && await page.$eval('.card-reversion .reversion-material', (b) => b.disabled),
     'and the other graph\'s cards stay unacceptable here');
-  check(!/:source-added/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))), 'nothing was written into the new graph');
+  check(!/:source-added/.test(await page.evaluate(() => loretileLog())), 'nothing was written into the new graph');
 
   await browser.close();
   fs.rmSync(dir, { recursive: true, force: true });

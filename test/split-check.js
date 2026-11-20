@@ -93,7 +93,7 @@ fs.writeFileSync(FIXTURE, Array.from({ length: 12 }, (_, i) =>
   const said = await page.$eval('.msgs', (e) => e.textContent);
   check(/ответ не уместился — читаю эту часть двумя половинами/.test(said), 'the chat says why it reads the part again');
   check(!/Unterminated|JSON/.test(said), 'no parse error reaches the author');
-  const proposed = await page.evaluate(() => (localStorage.getItem('loretile-kg-log').match(/:concept-proposed/g) || []).length);
+  const proposed = await page.evaluate(() => (loretileLog().match(/:concept-proposed/g) || []).length);
   check(proposed === 12, `every page's topic was proposed (${proposed} of 12)`);
   check(new RegExp('частей: ' + whole.length).test(said), `the run reports the parts it actually read (${whole.length})`);
 
@@ -104,7 +104,7 @@ fs.writeFileSync(FIXTURE, Array.from({ length: 12 }, (_, i) =>
   const allTopics = await page.$('.accept-all-topics');
   check(allTopics !== null && /Принять все темы \(12\)/.test(await allTopics.evaluate((e) => e.textContent)), 'one button accepts all 12 topics');
   await allTopics.click(); await sleep(400);
-  const accepted = await page.evaluate(() => (localStorage.getItem('loretile-kg-log').match(/:concept-accepted/g) || []).length);
+  const accepted = await page.evaluate(() => (loretileLog().match(/:concept-accepted/g) || []).length);
   check(accepted === 12, `all topics accepted in one tap (${accepted})`);
   const allLinks = await page.$('.accept-all-links');
   check(allLinks !== null, 'then the links, also in one tap');
@@ -117,7 +117,7 @@ fs.writeFileSync(FIXTURE, Array.from({ length: 12 }, (_, i) =>
   const drop = await page.$('.cards .card button:not(.primary)');
   if (drop) { await drop.click(); await sleep(250); }
   check((await page.$$('.cards .card')).length === 0, 'discard removes it');
-  const log = await page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const log = await page.evaluate(() => loretileLog());
   check((log.match(/:edge-accepted/g) || []).length === 1, 'one direction accepted, the loop never written');
 
   await browser.close();

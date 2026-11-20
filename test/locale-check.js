@@ -36,7 +36,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     };
   });
   const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
-  const logText = () => page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).map((k) => localStorage.getItem(k)).join('\n'));
+  const logText = () => page.evaluate(() => loretileLogs());
 
   // the English vineyard graph…
   await page.goto(BASE, { waitUntil: 'networkidle0' });

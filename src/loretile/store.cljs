@@ -1,7 +1,9 @@
 (ns loretile.store
   "Client state: the event vector is the truth, the KG is a reaction over
-   its fold. localStorage persists the working copy; export/import moves
-   log.edn in and out of the git repo (wiki/Authoring.md file layout)."
+   its fold. Every graph's log lives in memory and is saved to IndexedDB
+   (wiki/Graph-Sync.md B2); the registry and small settings stay in
+   localStorage; export/import moves log.edn in and out of the git repo
+   (wiki/Authoring.md file layout)."
   (:require [cljs.reader :as reader]
             [clojure.string :as str]
             [reagent.core :as r]
@@ -11,26 +13,29 @@
             [loretile.rdf :as rdf]
             [loretile.schema :as schema]
             [loretile.turtle :as turtle]
-            [loretile.i18n :as i18n]))
+            [loretile.i18n :as i18n]
+            [goog.object :as gobj]))
 
-;; SEVERAL GRAPHS, one working copy (wiki/Continuous-Learning.md §9):
-;; `events` is the graph you have open and still lives under the original
-;; key, so nothing about the working copy moved; every other graph is
-;; SHELVED under "loretile-kg-log:{id}" — the same shelf pattern the chat's
-;; sittings and the learner's runs already use. `ev/ns` finally carries the
-;; graph id instead of the "demo" stub.
+;; SEVERAL GRAPHS (wiki/Continuous-Learning.md §9): `events` is the graph
+;; you have open, `shelf` every other graph's log — all in memory, read once
+;; at boot. Each log is saved WHOLE to IndexedDB under its graph id
+;; (2026-11-20, wiki/Graph-Sync.md B2: localStorage's ~5 MB filled up). The
+;; old localStorage logs ("loretile-kg-log" = the open graph's working copy,
+;; "loretile-kg-log:{id}" = shelved ones) move over at boot — every boot, so
+;; a log put there (a check's seed) still opens.
 (def ^:private store-key "loretile-kg-log")
 (def ^:private graphs-key "loretile-graphs")     ; [{:id :title}]
 (def ^:private current-key "loretile-graph")     ; id of the open graph
 
 (defonce events (r/atom []))
+(defonce ^:private shelf (atom {}))   ; graph id -> log, every graph but the open one
 (defonce graphs (r/atom []))
 (defonce current (r/atom "demo"))
 (defonce last-error (r/atom nil))
 ;; called with [graph-id event] after every event stored HERE (an edit, an
 ;; undo, a copy into another graph) — loretile.sync notes it as pending
 (defonce on-append (atom nil))
-(declare import-edn! read-log sync-bound!)
+(declare import-edn! read-log sync-bound! load-registry!)
 
 ;; the fold is pure, so it is cached on the identity of the event vector:
 ;; renders call (kg) many times a frame, and every call re-folded the whole
@@ -71,30 +76,123 @@
          (reset! last-error {:error :storage-full :detail k})
          false)))
 
-(defn- persist! [] (write! store-key (pr-str @events)))
+;; --- the logs in IndexedDB ------------------------------------------------------
+
+(defonce ^:private db (atom nil))
+;; other tabs of this origin hear which graph's log was saved and re-read it
+(defonce ^:private tabs (when (exists? js/BroadcastChannel) (js/BroadcastChannel. "loretile-logs")))
+
+(defn- idb-open []
+  (js/Promise.
+   (fn [ok no]
+     (let [r (.open js/indexedDB "loretile" 1)]
+       (set! (.-onupgradeneeded r) #(.createObjectStore (.-result r) "logs"))
+       (set! (.-onsuccess r) #(ok (.-result r)))
+       (set! (.-onerror r) #(no (.-error r)))))))
+
+(defn- idb-read
+  "Promise of {graph id → log}: every log, or just `gid`'s."
+  ([] (idb-read nil))
+  ([gid]
+   (js/Promise.
+    (fn [ok no]
+      (let [st (.objectStore (.transaction @db "logs" "readonly") "logs")
+            ks (if gid (.getAllKeys st gid) (.getAllKeys st))
+            vs (if gid (.getAll st gid) (.getAll st))]
+        (set! (.-onerror vs) #(no (.-error vs)))
+        (set! (.-onsuccess vs)
+              #(ok (into {} (map (fn [k v] [k (try (reader/read-string v) (catch :default _ []))])
+                                 (.-result ks) (.-result vs))))))))))
+
+(defn- save-log!
+  "Save graph `gid`'s whole log. false when storage refuses at once (no
+   database, a full disk reported synchronously) — the edit is then refused;
+   a refusal that arrives later raises the banner, and the log stays in
+   memory, so the next save writes it whole again."
+  [gid evs]
+  (let [fail! #(reset! last-error {:error :storage-full :detail gid})]
+    (try
+      (let [tx (.transaction @db "logs" "readwrite")]
+        (.put (.objectStore tx "logs") (pr-str evs) gid)
+        (set! (.-oncomplete tx) #(some-> tabs (.postMessage gid)))
+        (set! (.-onabort tx) fail!)
+        true)
+      (catch :default _ (fail!) false))))
+
+(defn- idb-put-all
+  "Promise, resolved once every log of {gid → log} is stored (one transaction)."
+  [logs]
+  (js/Promise.
+   (fn [ok no]
+     (let [tx (.transaction @db "logs" "readwrite")
+           st (.objectStore tx "logs")]
+       (doseq [[gid evs] logs] (.put st (pr-str evs) gid))
+       (set! (.-oncomplete tx) ok)
+       (set! (.-onabort tx) #(no (.-error tx)))))))
+
+(defn- drop-log! [gid]
+  (try (.delete (.objectStore (.transaction @db "logs" "readwrite") "logs") gid) (catch :default _ nil)))
+
+(defn- persist! [] (save-log! @current @events))
 
 (defn- persist-registry! []
   (and (write! graphs-key (pr-str @graphs))
        (write! current-key (pr-str @current))))
 
-(defn- shelf-key [id] (str store-key ":" id))
-
-(defn- shelve! [id evs] (write! (shelf-key id) (pr-str evs)))
+(defn- shelve! [id evs]
+  (swap! shelf assoc id evs)
+  (save-log! id evs))
 
 (defn graph-events
   "The log of any graph, open or shelved."
   [id]
-  (if (= id @current) @events (read-ls (shelf-key id) [])))
+  (if (= id @current) @events (get @shelf id [])))
+
+;; the checks read logs here (they used to read localStorage)
+(gobj/set js/window "loretileLog" (fn [id] (pr-str (graph-events (or id @current)))))
+(gobj/set js/window "loretileLogs" (fn [] (str/join "\n" (map pr-str (cons @events (vals @shelf))))))
 
 (defn graph-title [id]
   (or (:title (first (filter #(= id (:id %)) @graphs))) id))
 
-(defn load! []
-  ;; "tessella-kg-log" = the pre-rename key; read once so nothing is lost
-  (try (when-let [s (or (js/localStorage.getItem store-key)
-                        (js/localStorage.getItem "tessella-kg-log"))]
-         (reset! events (reader/read-string s)))
-       (catch :default _ nil))
+(defn- ls-logs
+  "The logs still in localStorage: {graph id → log}, the working copy under
+   the open graph's id, and the localStorage keys they came from."
+  [cur]
+  (let [ks (for [i (range (.-length js/localStorage))
+                 :let [k (.key js/localStorage i)]
+                 :when (or (= k store-key) (= k "tessella-kg-log") (str/starts-with? k (str store-key ":")))]
+             k)]
+    {:keys (vec ks)
+     :logs (into {} (keep (fn [k]
+                            (when-let [evs (try (reader/read-string (js/localStorage.getItem k)) (catch :default _ nil))]
+                              [(if (str/starts-with? k (str store-key ":")) (subs k (inc (count store-key))) cur) evs])))
+                 ;; the pre-rename key loses to the current one
+                 (sort-by #(= % store-key) ks))}))
+
+(defn load!
+  "Read every log (IndexedDB, then whatever localStorage still holds — it
+   wins, and moves over), then the registry. A promise; the app renders
+   after it. When IndexedDB cannot open, the localStorage logs are read and
+   KEPT, and every edit is refused with the storage banner — never lost."
+  []
+  (let [cur (read-ls current-key "demo")
+        {:keys [keys logs]} (ls-logs cur)]
+    (-> (idb-open)
+        (.then (fn [d] (reset! db d) (idb-read)))
+        (.then (fn [stored]
+                 ;; localStorage's copies go only once IndexedDB has them
+                 (-> (idb-put-all logs)
+                     (.then #(doseq [k keys] (js/localStorage.removeItem k)))
+                     (.catch #(reset! last-error {:error :storage-full :detail "indexeddb"}))
+                     (.then (constantly (merge stored logs))))))
+        (.catch (fn [_] (reset! last-error {:error :storage-full :detail "indexeddb"}) logs))
+        (.then (fn [all]
+                 (reset! shelf (dissoc all cur))
+                 (reset! events (vec (get all cur [])))
+                 (load-registry!))))))
+
+(defn- load-registry! []
   ;; migration: a pre-multi-graph install has a working copy and no
   ;; registry — it becomes the first graph, keeping its id so the ev/ns
   ;; already stamped on its events still matches
@@ -128,12 +226,20 @@
          (= k current-key)
          (let [other (read-ls current-key @current)]
            (when (not= other @current)
+             (swap! shelf assoc @current @events)
              (reset! current other)
-             (reset! events (read-ls store-key []))
+             (reset! events (get @shelf other []))
              (reset! last-error {:error :graph-switched-elsewhere :detail other})))
-         (= k store-key) (when-not (= (pr-str @events) (.-newValue e))
-                           (reset! events (read-ls store-key @events)))
-         :else nil)))))
+         :else nil))))
+  ;; a log another tab saved: read it again
+  (some-> tabs (.addEventListener "message"
+                                  (fn [^js e]
+                                    (let [gid (.-data e)]
+                                      (.then (idb-read gid)
+                                             (fn [m] (when-let [evs (get m gid)]
+                                                       (if (= gid @current)
+                                                         (when (not= evs @events) (reset! events evs))
+                                                         (swap! shelf assoc gid evs))))))))))
 
 (defn- open!
   "Make graph `id` with log `evs` the open one, the registry becoming `gs`:
@@ -157,7 +263,7 @@
    losing the open graph is never an acceptable cost of navigating."
   [id]
   (and (not= id @current) (shelve! @current @events)
-       (open! id (read-ls (shelf-key id) []) @graphs)))
+       (open! id (get @shelf id []) @graphs)))
 
 (declare append!)
 
@@ -227,7 +333,8 @@
   [id]
   (when (not= id @current)
     (swap! graphs (fn [gs] (vec (remove #(= id (:id %)) gs))))
-    (try (js/localStorage.removeItem (shelf-key id)) (catch :default _ nil))
+    (swap! shelf dissoc id)
+    (drop-log! id)
     (persist-registry!)))
 
 (defn graph-kgs

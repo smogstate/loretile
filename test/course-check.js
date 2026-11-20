@@ -117,7 +117,7 @@ const SEED = '[' + [
   await page.click('.course-summary button.primary');
   await sleep(300);
   { const h = await page.evaluate(() => location.hash); check(/#\/course\/sql-/.test(h), 'publish navigates to the course [' + h + ']'); }
-  check(/course-published/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))),
+  check(/course-published/.test(await page.evaluate(() => loretileLog())),
     'course-published event in the log');
   check(/1 \/ 1 готовы/.test(await page.$eval('.panel-head', (e) => e.textContent)), 'course panel: every target ready');
   check(/порог сдачи 80%/.test(await page.$eval('.panel', (e) => e.textContent)), 'threshold shown');

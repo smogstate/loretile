@@ -30,7 +30,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/sql.ru.edn', 'utf8')
   page.on('dialog', (d) => d.accept());
   await page.setViewport({ width: 1280, height: 900 });
   const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log') || '');
+  const log = () => page.evaluate(() => loretileLog() || '');
   await page.goto(BASE, { waitUntil: 'networkidle0' });
   await page.evaluate(() => { localStorage.clear(); localStorage.setItem('loretile-locale', 'ru');
     for (const k of ['loretile-tour-done', 'loretile-chat-tour-done', 'loretile-learn-tour-done']) localStorage.setItem(k, '1'); });

@@ -196,7 +196,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
   await page.$eval('.item .form.edit input', (e) => { e.value = ''; });
   await page.type('.item .form.edit input', 'Переписанный вопрос по смыслу');
   await page.click('.item .form.edit button.primary'); await sleep(400);
-  const log = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).map((k) => localStorage.getItem(k)).join('\n'));
+  const log = await page.evaluate(() => loretileLogs());
   const v = log.split('{:ev/id').find((e) => e.includes('Переписанный вопрос по смыслу')) || '';
   check(/:version-created/.test(v) && /:change :material/.test(v), '#5 it is recorded as a material version');
   await page.goto(BASE + '#/c/where', { waitUntil: 'networkidle0' }); await sleep(500);
@@ -208,7 +208,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
   await page.evaluate(() => [...document.querySelectorAll('button.demo-row')].find((b) => /виноград/i.test(b.textContent)).click());
   await sleep(1500);
   const inject = (evs) => page.evaluate((evs) => {
-    const log = localStorage.getItem('loretile-kg-log');
+    const log = loretileLog();
     localStorage.setItem('loretile-kg-log', log.replace(/\]\s*$/, ' ' + evs.join(' ') + ']'));
   }, evs);
   const ev = (id, body) => `{:ev/id "${id}" :ev/ns "vineyard" :ev/actor "t" :ev/ts 9999999999 ${body}}`;
@@ -274,7 +274,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/vineyard.ru.edn', 'u
   // a newer publication that still holds the retired topic promises nothing
   // (review 2026-10-16 A14) …
   const republishAs = (id, retarget) => page.evaluate((id, retarget) => {
-    const log = localStorage.getItem('loretile-kg-log');
+    const log = loretileLog();
     const pub = log.split('{:ev/id').filter((e) => /:course-published/.test(e) && /:id "vineyard-season"/.test(e)).pop();
     let again = '{:ev/id' + pub.replace(/^ "[^"]+"/, ' "' + id + '"').replace(/\s*\]\s*$/, '');
     if (retarget) again = again.replace(/:targets \[[^]*?\]\]/, ':targets [["vine-anatomy" :apprentice]]');

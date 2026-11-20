@@ -241,7 +241,7 @@ for (const line of logs.split('\n')) {
   await setSol('SELECT c.city FROM customers c JOIN orders o ON o.customer_id = c.id GROUP BY c.city HAVING SUM(o.amount) > 200');
   await add();
   check((await nItems()) === before + 1, 'a solution that runs and returns rows is saved');
-  const log = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).map((k) => localStorage.getItem(k)).join('\n'));
+  const log = await page.evaluate(() => loretileLogs());
   const added = log.split('{:ev/id').find((e) => e.includes('Города, где сумма заказов больше 200')) || '';
   check(/:kind :exercise/.test(added) && /:schema "customers\(id, name, city\)\\norders\(id, customer_id, amount, placed\)"/.test(added),
     'it is stored as an exercise, with the table list read from Postgres' + (/:schema/.test(added) ? '' : ' — got ' + added.slice(0, 300)));

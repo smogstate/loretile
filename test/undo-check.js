@@ -25,7 +25,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await page.reload({ waitUntil: 'networkidle0' }); await sleep(300);
 
   const nodes = () => page.evaluate(() => document.querySelectorAll('.node').length);
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log') || '');
+  const log = () => page.evaluate(() => loretileLog() || '');
   const key = async (code, shift) => {
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
     await page.keyboard.down('Control'); if (shift) await page.keyboard.down('Shift');

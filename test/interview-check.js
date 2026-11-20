@@ -100,7 +100,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   check(await page.$('.card-cq') === null, 'all four decided');
   check(/Принято вопросов: 3/.test(await text('.card-profile-next')), 'the step counts the accepted ones');
   await page.click('.compose-profile'); await sleep(600);
-  const log = await page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const log = await page.evaluate(() => loretileLog());
   check(/:profile-set/.test(log), 'the ontology is written');
   check((log.match(/:cq-raised/g) || []).length === 3, 'with one competency question per accepted card');
   check(!/:costs/.test(log), 'the discarded question left no relation behind');

@@ -67,7 +67,7 @@ const LISTING = (keys) => `<?xml version="1.0" encoding="UTF-8"?><ListBucketResu
   const nodes = () => page.evaluate(() => document.querySelectorAll('.node:not(.node-ghost)').length);
   const count = (sel) => page.evaluate((s) => document.querySelectorAll(s).length, sel);
   const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log') || '');
+  const log = () => page.evaluate(() => loretileLog() || '');
 
   // the empty personal graph has nothing waiting
   check(await page.$('.merge-badge') === null, 'no badge on a graph with no merge files');

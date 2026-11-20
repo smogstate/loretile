@@ -111,7 +111,7 @@ fs.writeFileSync(FIXTURE, Array.from({ length: 12 }, (_, i) =>
   await sleep(100);
   await page.click('.cards .card button.primary');
   await sleep(250);
-  let log = await page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  let log = await page.evaluate(() => loretileLog());
   check(/:concept-id "t-1"[^}]*:text "Черновик 1"|:text "Черновик 1"/.test(log), 'ticked draft landed');
   check(!/:question "Вопрос 1"/.test(log), 'unticked question did not');
   check(/Разобрано 1 из/.test(await page.$eval('.cards h3', (e) => e.textContent)), 'counter moved');
@@ -162,7 +162,7 @@ fs.writeFileSync(FIXTURE, Array.from({ length: 12 }, (_, i) =>
   await sleep(150);
   await page.click('.confirm-new .drop-rest');
   await sleep(400);
-  log = await page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  log = await page.evaluate(() => loretileLog());
   check(/:edge-discarded/.test(log) && (await page.$$('.card')).length === 0, 'discard all rejects the rest');
 
   fs.unlinkSync(FIXTURE);

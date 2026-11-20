@@ -100,7 +100,7 @@ const SQL_DRAFTS = { exercises: [
   check((await page.$$('.card-ex')).length === 0, 'the cards resolve');
   await page.goto(BASE + '#/c/ripeness', { waitUntil: 'networkidle0' }); await sleep(600);
   check((await nItems()) === before + 1, 'the accepted draft is an exercise on the topic');
-  const log = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).map((k) => localStorage.getItem(k)).join('\n'));
+  const log = await page.evaluate(() => loretileLogs());
   const added = log.split('{:ev/id').find((e) => e.includes('средний сахар')) || '';
   check(/:kind :exercise/.test(added) && /:origin :drafted/.test(added) && /:runtime :python/.test(added),
     'stored as a drafted Python exercise — a human accepted it, the model wrote it');
@@ -116,7 +116,7 @@ const SQL_DRAFTS = { exercises: [
   check(/PostgreSQL/.test(sqlCall.system) && /create table customers/.test(sqlCall.system), 'the SQL prompt carries the graph\'s seed');
   check((await page.$$('.card-ex')).length === 1, 'the SQL draft survives: it rejected the wrong query');
   await page.click('.card-ex button.primary'); await sleep(300);
-  const log2 = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).map((k) => localStorage.getItem(k)).join('\n'));
+  const log2 = await page.evaluate(() => loretileLogs());
   const sqlAdded = log2.split('{:ev/id').find((e) => e.includes('больше одного клиента')) || '';
   check(/create table customers/.test(sqlAdded) && !/junk/.test(sqlAdded), 'the model\'s own setup was replaced by the graph\'s seed');
 

@@ -42,14 +42,14 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     console.log('SKIP: release build — the ontology-file door is internal until slice 3'); await browser.close(); process.exit(0);
   }
   await sleep(800);
-  check(/:profile-set/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))),
+  check(/:profile-set/.test(await page.evaluate(() => loretileLog())),
     'a graph made from an ontology file carries the profile in its own log');
 
   // load: it is moved over
   await page.reload({ waitUntil: 'networkidle0' });
   await sleep(500);
   const reg = await registry();
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const log = () => page.evaluate(() => loretileLog());
   check(/:ontology "ontology"/.test(reg), 'at load an ontology graph was made from it (a graph on the types ontology)');
   check(/:ontology "o-/.test(reg), 'and the data graph is bound to it in the registry');
   check(/:ontology-copy/.test(await log()), 'the data graph carries a copy of its ontology, as a graph property');
@@ -292,6 +292,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await addNode('Товар');
   await page.goto(BASE + '#/ontology', { waitUntil: 'networkidle0' }); await sleep(300);
   await page.click('.new-graph-from-ontology');
+  await page.waitForSelector('.new-graph-ontology', { timeout: 5000 }).catch(() => {});
   check(await page.$eval('.new-graph-ontology', (e) => e.value).catch(() => '') !== 'learning', 'with a type, the form opens with this ontology chosen');
   await formCreate('Склад: данные');
   check(/Склад: данные", :ontology "o-/.test(await registry()), 'and the new graph takes it');

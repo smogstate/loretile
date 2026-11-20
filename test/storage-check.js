@@ -1,6 +1,6 @@
 // Storage that refuses a write (review 2026-10-16, A1 A2 A7 A11 A15). The
 // browser's quota is stood in for by a setItem that throws for the keys
-// listed in window.__fail. What must hold:
+// listed in window.__fail ('idb': an IndexedDB put, where the logs live). What must hold:
 //  A1  a refused save is not reported as saved: the banner says storage is
 //      full, the topic is not on the map, the form keeps what was typed
 //  A15 a graph switch whose write is refused stays on the open graph — the
@@ -38,6 +38,12 @@ fs.writeFileSync(DOC, '# Notes\nA short note about joins.\n');
       if (window.__fail.includes(k)) throw new DOMException('quota', 'QuotaExceededError');
       return set.call(this, k, v);
     };
+    // the logs live in IndexedDB: 'idb' in __fail refuses their saves
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (v, k) {
+      if (window.__fail.includes('idb')) throw new DOMException('quota', 'QuotaExceededError');
+      return put.call(this, v, k);
+    };
     window.__calls = 0;
     const orig = window.fetch.bind(window);
     window.fetch = (url, opts) => {
@@ -64,9 +70,17 @@ fs.writeFileSync(DOC, '# Notes\nA short note about joins.\n');
   await page.click('.load-demo'); await sleep(1500);
   const sqlNodes = (await nodes()).length;
   check(sqlNodes > 3, 'the SQL demo is open (' + sqlNodes + ' topics)');
+  // B2 (wiki/Graph-Sync.md): logs live in IndexedDB — a reload brings them back
+  // from there, and an old localStorage copy (a seed) has moved over and gone
+  await page.evaluate(() => localStorage.setItem('loretile-kg-log:old-shelf', '[{:ev/id "o1" :ev/ns "old-shelf" :ev/actor "t" :ev/ts 1 :ev/type :change :ops [[:graph-set {:title "ОТЛОЖЕННЫЙ"}]]}]'));
+  await page.reload({ waitUntil: 'networkidle0' }); await sleep(800);
+  check((await nodes()).length === sqlNodes, 'B2: after a reload the open graph comes back from IndexedDB');
+  check(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).length) === 0,
+    'B2: no log is left in localStorage');
+  check(/ОТЛОЖЕННЫЙ/.test(await page.evaluate(() => loretileLog('old-shelf'))), 'B2: a shelved localStorage log moved into IndexedDB');
 
   // --- A1 -------------------------------------------------------------------
-  await fail(['loretile-kg-log']);
+  await fail(['idb']);
   await page.evaluate(() => [...document.querySelectorAll('.rail .rbtn')].find((e) => /Тема/.test(e.title)).click());
   await sleep(300);
   await page.type('.modal input', 'Тема, которой нет');
@@ -74,7 +88,7 @@ fs.writeFileSync(DOC, '# Notes\nA short note about joins.\n');
   check(/переполнено/.test(await text('div.error')), 'A1: the banner says storage is full');
   check((await nodes()).length === sqlNodes, 'A1: the refused topic is not on the map');
   check(await page.$('.modal input') !== null, 'A1: the form stays open with what was typed');
-  check(!/Тема, которой нет/.test(await ls('loretile-kg-log')), 'A1: and nothing half-written reached storage');
+  check(!/Тема, которой нет/.test(await page.evaluate(() => loretileLog())), 'A1: and nothing half-written reached storage');
   await page.keyboard.press('Escape'); await page.evaluate(() => { const b = [...document.querySelectorAll('.modal button')].find((x) => /Отмена/.test(x.textContent)); if (b) b.click(); });
   await sleep(200);
 
@@ -89,7 +103,7 @@ fs.writeFileSync(DOC, '# Notes\nA short note about joins.\n');
 
   // --- A7: arm a removal, switch graphs inside the ring -----------------------
   await page.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await page.reload({ waitUntil: 'networkidle0' }); await sleep(800);
-  const sqlLog = await ls('loretile-kg-log');
+  const sqlLog = await page.evaluate(() => loretileLog());
   // a course target refuses removal at once — arm the first topic that is not one
   for (let i = 0; i < sqlNodes && !(await page.$('.orbit-del.pending')); i++) {
     await (await nodes())[i].click(); await sleep(250);
@@ -99,10 +113,10 @@ fs.writeFileSync(DOC, '# Notes\nA short note about joins.\n');
   await page.goto(BASE + '#/graphs', { waitUntil: 'networkidle0' }); await sleep(250);
   await page.evaluate(() => [...document.querySelectorAll('.entity-row')].find((e) => !e.classList.contains('on')).querySelector('.entity-title').click());
   await sleep(500);
-  const otherBefore = await ls('loretile-kg-log');
+  const otherBefore = await page.evaluate(() => loretileLog());
   await sleep(6800);
-  check((await ls('loretile-kg-log')) === otherBefore && !/concept-discarded/.test(otherBefore), 'A7: the graph open when the ring closed is untouched');
-  const sqlShelf = await page.evaluate(() => localStorage.getItem('loretile-kg-log:demo-sql') || '');
+  check((await page.evaluate(() => loretileLog())) === otherBefore && !/concept-discarded/.test(otherBefore), 'A7: the graph open when the ring closed is untouched');
+  const sqlShelf = await page.evaluate(() => loretileLog('demo-sql') || '');
   check(sqlShelf.length > 0 && !/concept-discarded/.test(sqlShelf) && sqlShelf.length === sqlLog.length, 'A7: and the removal never landed in the graph it was armed in either');
 
   // --- A2 -------------------------------------------------------------------

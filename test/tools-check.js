@@ -139,7 +139,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   // that requires WHERE — none of it is the tutor's to read
   await page.evaluate(() => {
     // just before the course's LAST publication, so the pinned learner sees it all
-    const k = 'loretile-kg-log', s = localStorage.getItem(k), at = s.lastIndexOf('{:ev/id', s.lastIndexOf(':course {:id "sql-analyst"'));
+    const k = 'loretile-kg-log', s = loretileLog(), at = s.lastIndexOf('{:ev/id', s.lastIndexOf(':course {:id "sql-analyst"'));
     const e = (n, rest) => '{:ev/id "x-' + n + '" :ev/ns "demo" :ev/actor "demo-author" :ev/ts 1756808000000 ' + rest + '} ';
     const extra = e(1, ':ev/type :object-added :object {:id "o-where-de" :concept-id "where" :kind :explanation :level :apprentice :locale "de" :origin :authored :text "DEUTSCHES MATERIAL"}')
       + e(2, ':ev/type :object-added :object {:id "o-where-pro" :concept-id "where" :kind :explanation :level :professional :locale "ru" :origin :authored :text "ПРОФИ-МАТЕРИАЛ"}')
@@ -160,7 +160,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   }
   const planBtns = await page.$$('.plan-card button.primary'); await planBtns[planBtns.length - 1].click(); await sleep(400);
   const whereStem = await page.evaluate(() => {
-    const s = Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).map((k) => localStorage.getItem(k)).join('\n');
+    const s = loretileLogs();
     const m = s.match(/:primary-concept-id "where"[^\n]*?:stem "([^"]+)"/);
     return m ? m[1] : '';
   });

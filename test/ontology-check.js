@@ -55,7 +55,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await sleep(800);
   check(await nodes() === 0, 'a graph from the ontology opened empty');
   check(await page.$('.error') === null, 'and the file was accepted');
-  const log = await page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const log = await page.evaluate(() => loretileLog());
   check(/:profile-set/.test(log), 'the profile is the first event of its log');
   check(await page.$('.hats') === null, 'no learner hat on a graph with nothing to learn');
 
@@ -65,7 +65,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await addNode('Бухгалтер', 'role');
   check(await nodes() === 3, 'three typed nodes');
   check(!(await railTitles()).includes('Курс'), 'the course button is absent (never disabled)');
-  check(/:kind :role/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))),
+  check(/:kind :role/.test(await page.evaluate(() => loretileLog())),
     'the node carries its type');
 
   // link mode: the chooser offers only relations whose types fit
@@ -84,7 +84,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     `role → process offers performs/owns only (${offered.join(', ')})`);
   await page.evaluate(() => [...document.querySelectorAll('.modal .edge-btn')].find((b) => /выполняет/.test(b.textContent)).click());
   await sleep(400);
-  check(/:type :performs/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))), 'the edge was written in the ontology\'s relation');
+  check(/:type :performs/.test(await page.evaluate(() => loretileLog())), 'the edge was written in the ontology\'s relation');
 
   // the popup reads the relation back with its inverse label, no questions section
   await (await nodeByTitle(/Выставление/)).click(); await sleep(250);
@@ -114,7 +114,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   const cq = await page.$eval('.cq-row', (e) => e.textContent);
   check(/отвечено 1 из 2/.test(cq), `the question is checked over the graph (${cq})`);
   check(/пробелы: .*Оформление заказа/.test(cq), 'and names the process with no performer as the gap');
-  check(/:cq-raised/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))), 'the question is in the log');
+  check(/:cq-raised/.test(await page.evaluate(() => loretileLog())), 'the question is in the log');
   const relRows = await page.$$eval('table.onto tr', (rows) => rows.map((r) => r.textContent));
   check(relRows.some((r) => /triggers/.test(r) && /ни один вопрос не требует/.test(r)), 'a relation no question needs is marked');
   check(!relRows.some((r) => /performs/.test(r) && /ни один вопрос не требует/.test(r)), 'the one a question needs is not');

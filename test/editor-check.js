@@ -81,7 +81,7 @@ const check = (ok, name) => {
 
   // -- deep link into a concept popup
   const whereId = await page.evaluate(() => {
-    const evs = localStorage.getItem('loretile-kg-log');
+    const evs = loretileLog();
     const m = evs.match(/:id "([^"]*where[^"]*)"/) || evs.match(/:id "(файл[^"]*)"/);
     return m ? m[1] : null;
   });
@@ -118,7 +118,7 @@ const check = (ok, name) => {
     await sleep(120);
   }
   check((await page.$$('.panel .item')).length === 3, 'three items added');
-  const first = await page.evaluate(() => localStorage.getItem('loretile-kg-log').split('{:ev/id').find((e) => e.includes('Вопрос про WHERE №1')) || '');
+  const first = await page.evaluate(() => loretileLog().split('{:ev/id').find((e) => e.includes('Вопрос про WHERE №1')) || '');
   check(/:options \["вариант А" "вариант Б"\]/.test(first) && /:key 1/.test(first) && !/""/.test(first.match(/:options \[[^\]]*\]/)[0]),
     'the marked option is the key; the empty third row is dropped');
 

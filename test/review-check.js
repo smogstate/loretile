@@ -45,14 +45,14 @@ fs.writeFileSync(CRAFTED, '{:ev/id "x1" :ev/ns "g" :ev/actor "a" :ev/ts 1 :ev/ty
   });
   await page.reload({ waitUntil: 'networkidle0' }); await sleep(400);
   await page.click('.load-demo'); await sleep(1500);
-  const log0 = await ls('loretile-kg-log');
+  const log0 = await page.evaluate(() => loretileLog());
 
   // --- A3 -------------------------------------------------------------------
   // import lives in the Graphs view and makes a graph of its own (2026-11-19)
   await page.goto(BASE + '#/graphs', { waitUntil: 'networkidle0' }); await sleep(300);
   await (await page.$('.import-graph input[type=file]')).uploadFile(CRAFTED); await sleep(800);
   check(/не импортирован/.test(await text('div.error')), 'A3: a log whose profile takes «requires» is refused, in words');
-  check((await ls('loretile-kg-log')) === log0, 'A3: and the open graph is unchanged');
+  check((await page.evaluate(() => loretileLog())) === log0, 'A3: and the open graph is unchanged');
   await page.evaluate(() => { const b = document.querySelector('div.error button'); if (b) b.click(); });
 
   // --- A5 -------------------------------------------------------------------
@@ -83,11 +83,11 @@ fs.writeFileSync(CRAFTED, '{:ev/id "x1" :ev/ns "g" :ev/actor "a" :ev/ts 1 :ev/ty
   const h2 = await publish('Основы: запросов');
   check(/#\/course\/основы-запросов$/.test(h1) && /#\/course\/основы-запросов-2$/.test(h2),
     'A6: two titles with the same slug get two courses (' + h1 + ', ' + h2 + ')');
-  check(((await ls('loretile-kg-log')).match(/:id "основы-запросов"/g) || []).length === 1, 'A6: the first course was not overwritten');
+  check(((await page.evaluate(() => loretileLog())).match(/:id "основы-запросов"/g) || []).length === 1, 'A6: the first course was not overwritten');
 
   // --- A14 ------------------------------------------------------------------
   // a prerequisite of the demo course (a requires-edge target that is not a course target)
-  const log1 = await ls('loretile-kg-log');
+  const log1 = await page.evaluate(() => loretileLog());
   const course = log1.match(/:course-published, :course \{:id "([^"]+)"[^]*?:targets \[([^\]]*\])*\]/);
   const cid = course[1];
   const targets = new Set([...course[0].matchAll(/\["([^"]+)" :/g)].map((m) => m[1]));
@@ -96,7 +96,7 @@ fs.writeFileSync(CRAFTED, '{:ev/id "x1" :ev/ns "g" :ev/actor "a" :ev/ts 1 :ev/ty
   while (grew) { grew = false; for (const [a, b] of edges) if (reach.has(a) && !reach.has(b)) { reach.add(b); grew = true; } }
   const prereq = [...reach].find((x) => !targets.has(x));
   await page.evaluate((id) => {
-    const log = localStorage.getItem('loretile-kg-log');
+    const log = loretileLog();
     localStorage.setItem('loretile-kg-log', log.replace(/\]\s*$/, ` {:ev/id "dep-1" :ev/ns "t" :ev/actor "t" :ev/ts 9999999999 :ev/type :concept-deprecated :id "${id}"}]`));
   }, prereq);
   await page.goto(BASE + '#/course/' + encodeURIComponent(cid), { waitUntil: 'networkidle0' }); await page.reload({ waitUntil: 'networkidle0' }); await sleep(600);

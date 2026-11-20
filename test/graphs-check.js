@@ -63,7 +63,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await page.click('.modal button.primary');
   await sleep(400);
   check(await nodes() === 1, 'a topic authored in my own graph');
-  const ns = await page.evaluate(() => (localStorage.getItem('loretile-kg-log').match(/:ev\/ns "([^"]+)"/) || [])[1]);
+  const ns = await page.evaluate(() => (loretileLog().match(/:ev\/ns "([^"]+)"/) || [])[1]);
   check(/^g-/.test(ns), `the event carries the real namespace, not the "demo" stub (${ns})`);
   await G.openGraph(page, BASE, /SQL|аналитик/);
   await sleep(700);
@@ -199,19 +199,17 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await sleep(600);
   const beforeNodes = await nodes();
   await page.evaluate(() => {
-    window.__setItem = localStorage.setItem.bind(localStorage);
-    localStorage.setItem = (k, v) => {
-      if (k.startsWith('loretile-kg-log:')) { const e = new Error('QuotaExceededError'); e.name = 'QuotaExceededError'; throw e; }
-      return window.__setItem(k, v);
-    };
+    // logs live in IndexedDB: a store that refuses every save
+    window.__put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function () { throw new DOMException('quota', 'QuotaExceededError'); };
   });
   await G.openGraph(page, BASE, /Мой граф/);
   await sleep(700);
   check(await nodes() === beforeNodes, 'a switch that cannot shelve leaves the open graph untouched');
   check(await page.$('.error') !== null, 'and says so instead of failing silently');
-  const survived = await page.evaluate(() => (localStorage.getItem('loretile-kg-log') || '').length);
+  const survived = await page.evaluate(() => (loretileLog() || '').length);
   check(survived > 1000, `the open graph's log is still there (${survived} chars)`);
-  await page.evaluate(() => { localStorage.setItem = window.__setItem; });
+  await page.evaluate(() => { IDBObjectStore.prototype.put = window.__put; });
   await page.reload({ waitUntil: 'networkidle0' });
   await sleep(700);
   check(await nodes() === beforeNodes, 'and it is still intact after a reload');

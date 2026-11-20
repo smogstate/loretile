@@ -90,7 +90,7 @@ const MOCK_OPS = {
     await sleep(150);
   }
   check((await page.$$('.card')).length === 0, 'all cards resolved');
-  const logC = await page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const logC = await page.evaluate(() => loretileLog());
   check(/:object-added/.test(logC) && /:question-raised/.test(logC), 'ticked drafts went in with their topics');
 
   // nodes landed on the map (split view shows map left)

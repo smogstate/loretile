@@ -2088,11 +2088,12 @@
 
 (defn new-graph-modal []
   (when-let [{:keys [ontology]} @new-graph-form]
-    (let [title (r/atom "")
-          choices (concat ["learning" fold/types-ontology]
-                          (map :id (filter #(store/whole-ontology? (:id %)) (store/ontology-graphs))))]
+    (let [title (r/atom "")]
       (fn []
         (when-let [{:keys [ontology]} @new-graph-form]
+          ;; read on every render: an ontology may have become whole since mount
+          (let [choices (concat ["learning" fold/types-ontology]
+                                (map :id (filter #(store/whole-ontology? (:id %)) (store/ontology-graphs))))]
           [:div.modal {:on-click #(reset! new-graph-form nil)}
            [:div.form.new-graph-form {:on-click #(.stopPropagation %)}
             [:h3 [icons/icon :graph] " " (t :ui/new-graph)]
@@ -2115,7 +2116,7 @@
                                          (when-let [err (store/bind! gid ontology)] (reset! store/last-error err))
                                          (goto! "#/"))))))}
               (t :ui/create)]
-             [:button {:on-click #(reset! new-graph-form nil)} (t :ui/cancel)]]]])))))
+             [:button {:on-click #(reset! new-graph-form nil)} (t :ui/cancel)]]]]))))))
 
 (defn palette-actions [kg]
   (concat

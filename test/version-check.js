@@ -29,7 +29,7 @@ const LOG = '[' + [
   const page = await browser.newPage();
   page.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
   await page.setViewport({ width: 1280, height: 900 });
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const log = () => page.evaluate(() => loretileLog());
   const evs = async () => (await log()).split(/(?=\{:ev\/)/);
   await page.goto(BASE, { waitUntil: 'networkidle0' });
   await page.evaluate(async (l, old) => {

@@ -49,7 +49,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
       await page.goto(BASE, { waitUntil: 'networkidle0' });
       return page;
     };
-    const log = (p) => p.evaluate(() => localStorage.getItem('loretile-kg-log') || '');
+    const log = (p) => p.evaluate(() => loretileLog() || '');
     const append = (p, edn) => p.evaluate((s) => loretile.store.append_BANG_(cljs.reader.read_string(s)), edn);
     // one whole sync cycle of the open graph, waited for (retried while one is already running)
     const syncNow = async (p) => {

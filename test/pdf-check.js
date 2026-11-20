@@ -106,7 +106,7 @@ const MOCK_OPS = {
   }
   check(/Прочитан «fixture\.pdf»: 2 стр/.test(await page.$eval('.msgs', (e) => e.textContent)),
     'system message reports the read');
-  check(/:source-added/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))),
+  check(/:source-added/.test(await page.evaluate(() => loretileLog())),
     'attaching a document adds a source node');
   await page.screenshot({ path: 'test/shot-pdf-attached.png' });
 
@@ -131,7 +131,7 @@ const MOCK_OPS = {
   // accepting a concept proposed from the document grounds it in the source
   await page.click('.cards .card button.primary');
   await sleep(200);
-  const log = await page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const log = await page.evaluate(() => loretileLog());
   check(/:source-id "src-/.test(log), 'accepted concept carries the source id');
   check((await page.$$('.card')).length === 1, 'card resolved after accept');
 

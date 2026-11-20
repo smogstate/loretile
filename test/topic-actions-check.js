@@ -19,7 +19,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   page.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
   await page.setViewport({ width: 1280, height: 900 });
   const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const log = () => page.evaluate(() => loretileLog());
   const open = async (id) => { await page.goto(BASE + '#/c/' + id, { waitUntil: 'networkidle0' }); await sleep(600); };
 
   await page.goto(BASE, { waitUntil: 'networkidle0' });

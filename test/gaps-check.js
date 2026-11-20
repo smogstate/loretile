@@ -76,7 +76,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
 
   // «find the answer»: the model picks an existing node; the edge is a card
   const ids = await page.evaluate(() => {
-    const log = localStorage.getItem('loretile-kg-log');
+    const log = loretileLog();
     return { role: (log.match(/:id "([^"]+)",? :title "Бухгалтер"/) || [])[1], invoice: (log.match(/:id "([^"]+)",? :title "Выставление счёта"/) || [])[1] };
   });
   await page.evaluate((s) => { window.__script = s; window.__calls = []; }, [{ edges: [{ from: ids.role, to: ids.invoice, why: 'счета выставляет бухгалтерия' }], concepts: [], note: 'Нашёл среди существующих узлов.' }]);
@@ -89,13 +89,13 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   check(/выполняет/.test(await page.$$eval('.card', (es) => es.map((e) => e.textContent).join(' '))), 'in the ontology\'s words');
   await page.evaluate(() => [...document.querySelectorAll('.card')].find((c) => /выполняет/.test(c.textContent) && !/Пробелы/.test(c.textContent)).querySelector('button.primary').click());
   await sleep(500);
-  check(/:type :performs/.test(await page.evaluate(() => localStorage.getItem('loretile-kg-log'))), 'accepting writes the edge');
+  check(/:type :performs/.test(await page.evaluate(() => loretileLog())), 'accepting writes the edge');
   check(/Узлов без ответа: 1/.test(await text('.card-gaps')), 'and the graph now counts one gap fewer');
 
   // the second gap: the model answers with an INFERENCE (stated: false) and a
   // topic that repeats an existing one — both cards say so, and neither is
   // ever accepted in bulk (business dogfood 2026-10-15)
-  const checkout = await page.evaluate(() => (localStorage.getItem('loretile-kg-log').match(/:id "([^"]+)",? :title "Оформление заказа"/) || [])[1]);
+  const checkout = await page.evaluate(() => (loretileLog().match(/:id "([^"]+)",? :title "Оформление заказа"/) || [])[1]);
   await page.evaluate((s) => { window.__script = s; window.__calls = []; }, [{
     edges: [{ from: ids.role, to: checkout, why: 'бухгалтер, видимо, и оформляет', stated: false }],
     concepts: [{ id: 'kassir', type: 'role', title: 'Кассир', definition: 'на кассе', evidence: '', stated: false },
@@ -114,7 +114,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   // it is told the source does not say so (2026-10-21)
   await page.evaluate(() => [...document.querySelectorAll('.card')].find((c) => c.querySelector('.tag-inferred') && /выполняет/.test(c.textContent)).querySelector('button.primary').click());
   await sleep(500);
-  const log = await page.evaluate(() => localStorage.getItem('loretile-kg-log'));
+  const log = await page.evaluate(() => loretileLog());
   const accepted = [...log.matchAll(/:edge-accepted, :edge (\{[^}]*\})/g)].map((m) => m[1]);
   check(accepted.length === 2 && accepted.filter((x) => /:inferred\? true/.test(x)).length === 1 && accepted.some((x) => x.includes(checkout) && /:inferred\? true/.test(x)),
     `the accepted inference is stored as one, the stated link is not (${accepted.length} links)`);

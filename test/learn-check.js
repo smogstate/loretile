@@ -267,7 +267,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
   // remains real is a course that arrived some other way: an imported log, or
   // one published before the gate existed. Inject exactly that.
   await page.evaluate(() => {
-    const log = localStorage.getItem('loretile-kg-log');
+    const log = loretileLog();
     const ev = '{:ev/id "legacy-course" :ev/ns "demo-sql" :ev/actor "import" :ev/ts 1 '
       + ':ev/type :course-published :course {:id "legacy" :title "Ввезённый курс" '
       + ':targets [["tables" :apprentice] ["select" :apprentice]] :locale "ru" :pass-threshold 80}}';

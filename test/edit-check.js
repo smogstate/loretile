@@ -69,7 +69,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await sleep(800);
   check(/GROUP BY: корзины/.test(await text('.panel-head h2')) && /Отредактированный объект/.test(await text('.lo p'))
     && /Новый вопрос/.test(await text('.item p')), 'edits survive a reload');
-  const versions = await page.evaluate(() => (localStorage.getItem('loretile-kg-log').match(/:version-created/g) || []).length);
+  const versions = await page.evaluate(() => (loretileLog().match(/:version-created/g) || []).length);
   check(versions === 3, `three version-created events in the log (got ${versions})`);
 
   await browser.close();

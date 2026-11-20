@@ -91,7 +91,7 @@ const questionsFor = (user) => {
     };
   }, REPLIES, questionsFor.toString());
   const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
-  const log = () => page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('loretile-kg-log')).map((k) => localStorage.getItem(k)).join('\n'));
+  const log = () => page.evaluate(() => loretileLogs());
 
   await page.goto(BASE, { waitUntil: 'networkidle0' });
   await page.evaluate(() => {

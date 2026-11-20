@@ -60,7 +60,7 @@ const REPLY = {
   });
   await page.reload({ waitUntil: 'networkidle0' }); await sleep(300);
 
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log') || '');
+  const log = () => page.evaluate(() => loretileLog() || '');
   const msgs = () => page.$$eval('.chat .msgs .msg', (els) => els.map((e) => e.textContent).join(' | '));
   const drop = async (file, script) => {
     await page.goto(BASE + '#/chat', { waitUntil: 'networkidle0' }); await sleep(400);
@@ -143,7 +143,7 @@ const REPLY = {
     'a type-draft card for «правило»; the fitting node is a card, the waiting one is held back');
   check(/Ждут этого типа: 1/.test(await pile()), 'the draft says how many nodes wait for it');
   await page.click('.card-type-draft .type-draft-accept'); await sleep(600);
-  const ologMatch = await page.evaluate((id) => localStorage.getItem('loretile-kg-log:' + id) || '', oid);
+  const ologMatch = await page.evaluate((id) => loretileLog(id) || '', oid);
   check(/:node-set "rule" \{:title "правило"\}/.test(ologMatch), 'accepting writes the type into the ONTOLOGY graph');
   check(/Ставка 20/.test(await pile()), 'its copy comes back here and the waiting node is now a card');
   check(/:concept-proposed[^}]*:id "vat"/.test(await log()), 'the node that waited is proposed now (a ghost on the map)');
@@ -167,7 +167,7 @@ const REPLY = {
   check(/НЕТ в списке/.test(sys2), 'the link step may name a relation the ontology lacks');
   check(await page.$('.card-relation-draft') !== null && /проверяет/.test(await pile()), 'a relation-draft card for «проверяет»');
   await page.click('.card-relation-draft .relation-draft-accept'); await sleep(600);
-  check(/:edge-set "role" :checks "rule" \{:label "проверяет", :inverse "проверяется"\}/.test(await page.evaluate((id) => localStorage.getItem('loretile-kg-log:' + id) || '', oid)),
+  check(/:edge-set "role" :checks "rule" \{:label "проверяет", :inverse "проверяется"\}/.test(await page.evaluate((id) => loretileLog(id) || '', oid)),
     'accepting writes the relation into the ONTOLOGY graph, between the two types');
   await page.evaluate(() => { const b = document.querySelector('.accept-all-topics'); if (b) b.click(); }); await sleep(500);
   await page.evaluate(() => { [...document.querySelectorAll('.card')].filter((c) => /проверяет/.test(c.textContent) && c.querySelector('button.primary')).forEach((c) => c.querySelector('button.primary').click()); });

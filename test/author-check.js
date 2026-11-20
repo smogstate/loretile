@@ -19,7 +19,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     const click = HTMLAnchorElement.prototype.click;
     HTMLAnchorElement.prototype.click = function () { if (!this.download) click.call(this); };
   });
-  const log = () => page.evaluate(() => localStorage.getItem('loretile-kg-log') || '');
+  const log = () => page.evaluate(() => loretileLog() || '');
   const evs = async () => (await log()).split(/(?=\{:ev\/)/);
   const addTopic = async (title) => {
     await page.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(300);
