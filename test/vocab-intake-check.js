@@ -28,6 +28,8 @@ const REPLY = {
               { id: 'requires', label: 'требует', from: 'process', to: 'process' }],
   note: 'Описание процессов магазина.',
 };
+// a derive reply naming the relation that orders the steps (real-model run 2026-11-20)
+const DREPLY = { ...REPLY, relations: [...REPLY.relations, { id: 'follows', label: 'идёт после', inverse: 'предшествует', from: 'process', to: 'process' }], ordering: 'follows' };
 
 (async () => {
   const browser = await puppeteer.launch({
@@ -178,7 +180,7 @@ const REPLY = {
 
   // DERIVE: the document makes an ontology first, then is read as this graph's content
   await fresh('Пустой 3');
-  await drop(DOC, [REPLY, { concepts: [{ id: 'buh2', title: 'Бухгалтер', type: 'role', definition: 'Ведёт счета.' }] }]);
+  await drop(DOC, [DREPLY, { concepts: [{ id: 'buh2', title: 'Бухгалтер', type: 'role', definition: 'Ведёт счета.' }] }]);
   await page.click('.card-triage .triage-content');
   await page.select('.card-triage .triage-which', 'derive');
   await page.click('.card-triage .triage-go'); await sleep(1500);
@@ -187,7 +189,12 @@ const REPLY = {
   check((await page.$$('.card-type')).length >= 1 && await page.$('.card-derive-next .derive-go[disabled]') !== null,
     'its types are cards, and the next step waits until they are decided');
   await page.evaluate(() => { const b = document.querySelector('.accept-all-topics'); if (b) b.click(); }); await sleep(400);
+  check(await page.$$eval('.card-relation', (cs) => cs.some((c) => /идёт после/.test(c.textContent) && /задаёт порядок шагов/.test(c.textContent))),
+    'the relation the reply names as the order of steps says so on its card');
   await page.evaluate(() => { const b = document.querySelector('.accept-all-links'); if (b) b.click(); }); await sleep(400);
+  const oid3 = (reg3.match(/:id "([^"]+)", :title "Онтология: Как работает магазин"/) || [])[1];
+  check(/:edge-set "process" :follows "process" \{[^}]*:ordering\? true/.test(await page.evaluate((id) => loretileLog(id) || '', oid3 || '')),
+    'and is written as the ontology\'s ordering relation');
   await page.evaluate(() => { [...document.querySelectorAll('.relation-accept, .type-accept')].forEach((b) => b.click()); }); await sleep(500);
   check(await page.$('.card-derive-next .derive-go:not([disabled])') !== null, 'decided: the next step can go');
   await page.click('.card-derive-next .derive-go'); await sleep(1500);

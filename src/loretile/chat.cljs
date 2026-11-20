@@ -537,6 +537,7 @@
     :earlier (t :chat/sig-earlier {"{title}" title "{p1}" p1 "{p2}" p2})
     :in-def (t :chat/sig-in-def {"{inner}" inner "{outer}" outer})
     :step-after (t :chat/sig-step {"{title}" title "{n1}" n1 "{n2}" n2})
+    :same-sentence (t :chat/sig-sentence)
     (str sig)))
 
 (defn- signal-ru
@@ -549,6 +550,8 @@
     :in-def (str "«" inner "» входит в определение «" outer "»")
     ;; i18n-ignore
     :step-after (str "«" title "» — шаг " n1 " того же нумерованного списка, этот — шаг " n2)
+    ;; i18n-ignore
+    :same-sentence "оба названы в одном предложении материала"
     (str sig)))
 
 (defn- answer-language
@@ -1053,7 +1056,9 @@
         ;; A re-read of missing steps brings its list's text as :steps-text.
         (p/let [whole (or (:steps-text d) (:text d) material)
                 steps (fold/numbered-steps whole)
-                stepped #(if-let [st (fold/step-of steps whole %)] (assoc % :step st) %)
+                stepped #(cond-> %
+                           (fold/step-of steps whole %) (assoc :step (fold/step-of steps whole %))
+                           (fold/sentence-of whole %) (assoc :sentence (fold/sentence-of whole %)))
                 batch (map (comp stepped concept-payload) ok-c)
                 ;; nodes already in the graph sit in the steps too: a re-read
                 ;; step 5 pairs with the 4.x and 6 accepted before
@@ -1098,6 +1103,8 @@
    "{\"types\":[{\"id\":\"slug\",\"label\":\"как называется\",\"description\":\"одно предложение: что это\",\"evidence\":\"цитата из материала\"}]," "\n"
    ;; i18n-ignore
    " \"relations\":[{\"id\":\"slug\",\"label\":\"как читается\",\"inverse\":\"как читается обратно\",\"from\":\"id типа\",\"to\":\"id типа\",\"description\":\"одно предложение\",\"evidence\":\"цитата\"}]," "\n"
+   ;; i18n-ignore
+   " \"ordering\":\"id связи, задающей ПОРЯДОК шагов (from идёт ПОСЛЕ to, между узлами одного типа) — только если материал описывает последовательность; иначе не указывай\"," "\n"
    ;; i18n-ignore
    " \"note\":\"коротко: что это за материал\"}" "\n"
    ;; i18n-ignore
@@ -1192,8 +1199,11 @@
                                                  d (str "\n\nМатериал из файла «" (:name d) "»" (when (> n 1) (str ", часть из " n)) ":\n" part))
                                                {:max-tokens (llm/long-reply-cap)})
                                 ops (parse-reply raw)]
+                          ;; the relation the reply names as the ORDER of steps (real-model
+                          ;; run 2026-11-20: a numbered regulation's steps never got ordered)
                           {:types (into types (remove (fn [x] (some #(= (:id %) (:id x)) types)) (:types ops)))
-                           :relations (into relations (:relations ops))
+                           :relations (into relations (map #(cond-> % (and (seq (:ordering ops)) (= (:ordering ops) (:id %))) (assoc :ordering? true))
+                                                           (:relations ops)))
                            :notes (conj notes (:note ops))}))))
                   (p/resolved {:types [] :relations [] :notes []})
                   parts)
@@ -2434,6 +2444,7 @@
    [:span.card-tag (t :chat/relation-tag)]
    [:b (str (:from-title data) " —" (:label data) "→ " (:to-title data))]
    (when (seq (:inverse data)) [:p.muted (str (:to-title data) " —" (:inverse data) "→ " (:from-title data))])
+   (when (:ordering? data) [:p.card-tag.relation-ordering (t :chat/relation-ordering)])
    (when (seq (:description data)) [:p (:description data)])
    (when (seq (:evidence data)) [:p.muted "«" (:evidence data) "»"])
    [:div.row

@@ -1443,3 +1443,32 @@ its processes and roles.'''@en .
                  (e :concept-discarded :id "a" :ev/ts 5 :ev/recorded 50)]]
         (is (= #{} (set (keys (:concepts (f/kg (f/events-as-of log {:valid 8})))))))
         (is (= #{"a"} (set (keys (:concepts (f/kg (f/events-as-of log {:recorded 20})))))))))))
+
+(deftest signals-from-a-real-regulation
+  ;; real-model run 2026-11-20 (wiki/Real-Model-Run-2026-11-20.md)
+  (testing "a title counts as mentioned with other endings"
+    (let [scale {:id "vesovaya" :title "Весовая"}
+          weigh {:id "vzv" :title "Взвешивание" :definition "Взвешивание партии на весовой."}]
+      (is (= "vzv" (:from (f/pair-signals weigh scale))))
+      (is (nil? (f/pair-signals {:id "x" :title "Весовая"} {:id "y" :title "Сбор" :definition "Сбор урожая."})))))
+  (testing "numbered list items are steps of one list"
+    (let [text "# Регламент\n\n## Порядок\n1. Взвешивание на весовой.\n2. Отбор пробы и анализ.\n3. Решение технолога.\n"
+          steps (f/numbered-steps text)
+          at (fn [ev] (f/step-of steps text {:evidence ev}))]
+      (is (= [1 2 3] (keep :n steps)))
+      (is (= "Порядок" (:parent (at "Отбор пробы и анализ"))))
+      (is (f/step-next? (at "Отбор пробы и анализ") (at "Взвешивание на весовой")))))
+  (testing "two nodes quoted from one sentence: a weak signal, ranked after the strong ones"
+    (let [text "Технолог переводит вино в ёмкость для выдержки: дубовую бочку на 225 литров. Погребщик доливает бочки."
+          node (fn [id title ev] {:id id :title title :definition "" :evidence ev :sentence (f/sentence-of text {:evidence ev})})
+          move (node "move" "Перевод в ёмкость" "переводит вино в ёмкость для выдержки")
+          barrel (node "barrel" "Дубовая бочка 225 л" "дубовую бочку на 225 литров")
+          topup (node "topup" "Долив" "Погребщик доливает бочки")
+          strong (assoc topup :id "t2" :title "Долив бочек" :definition "Перевод в ёмкость закончен")]
+      (is (= (:sentence move) (:sentence barrel)))
+      (is (not= (:sentence move) (:sentence topup)))
+      (is (:weak? (f/pair-signals move barrel)))
+      (is (nil? (f/pair-signals barrel topup)))
+      (let [cs (f/edge-candidates f/empty-kg [move barrel strong] 10)]
+        (is (= #{"move" "t2"} (set [(:a (first cs)) (:b (first cs))])) "the strong pair first")
+        (is (= #{"move" "barrel"} (set [(:a (second cs)) (:b (second cs))])) "then the weak one")))))

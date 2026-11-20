@@ -1110,13 +1110,25 @@
   (some-> (re-find #"\[стр\. (\d+)\]" (str (:evidence c))) second
           #?(:clj Long/parseLong :cljs js/parseInt)))
 
+(defn- stem
+  "A word cut to where Russian (and German) endings start: «весовая» and
+   «весовой» → «весов», «бочка»/«бочки»/«бочек» → «боч». Numbers stay whole."
+  [w]
+  (if (re-matches #"\d+" w) w (subs w 0 (max 3 (min 6 (- (count w) 2))))))
+
 (defn- mentions?
-  "Does b's definition or evidence use a's title (case-insensitive)?"
+  "Does b's definition or evidence use a's title (case-insensitive)? Also
+   when every word of the title occurs with another ending — the whole
+   title only missed «на весовой» for «Весовая» (real-model run 2026-11-20)."
   [a b]
-  (let [t (str (:title a))]
+  (let [t (str (:title a))
+        text (str/lower-case (str (:definition b) " " (:evidence b)))]
     (and (>= (count t) 3)
-         (str/includes? (str/lower-case (str (:definition b) " " (:evidence b)))
-                        (str/lower-case t)))))
+         (or (str/includes? text (str/lower-case t))
+             (let [ws (tokens t)
+                   ts (tokens text)]
+               (and (seq ws)
+                    (every? (fn [w] (let [s (stem w)] (some #(str/starts-with? % s) ts))) ws)))))))
 
 ;; --- step order from numbered headings (business dogfood 2026-10-15: a
 ;; markdown document has no page marks, so the ordering relation stayed thin —
@@ -1131,12 +1143,15 @@
   [text]
   ;; fenced code is blanked to spaces of the same length (offsets stay
   ;; true): a «# 1. load data» comment is no heading (review 2026-10-16 A23)
+  ;; a NUMBERED LIST ITEM («1. Взвешивание на весовой …») is a step too, one
+  ;; level below every heading: a regulation numbers its steps so, and their
+  ;; order was never asked (real-model run 2026-11-20)
   (let [text (str text)
         scan (str/replace text #"```[\s\S]*?```" #(apply str (map (fn [ch] (if (= ch \newline) ch " ")) %)))]
-    (loop [ms (re-seq #"(?m)^(#{1,6})[ \t]+(.+)$" scan) from 0 stack [] out []]
+    (loop [ms (re-seq #"(?m)^(?:(#{1,6})|[ \t]{0,3}(?=\d{1,3}[.)][ \t]))[ \t]*(.+)$" scan) from 0 stack [] out []]
       (if-let [[line hashes title] (first ms)]
         (let [at (str/index-of scan line from)
-              level (count hashes)
+              level (if hashes (count hashes) 7)
               stack (vec (take-while #(< (:level %) level) stack))
               ;; «2.A Buyer», «3. FP&A», «4) Legal» — a bare «2024 Roadmap» is no step
               [_ n sub] (re-matches #"(\d{1,3})(?:\.([A-Za-z]|\d+)\.?|[.)])\s+.*" (str/trim title))
@@ -1162,6 +1177,19 @@
         at (or (probe (:evidence c)) (probe (:title c)))
         h (when at (last (take-while #(<= (:at %) at) steps)))]
     (when (:n h) (select-keys h [:parent :parent-at :n :sub]))))
+
+(defn sentence-of
+  "Where the sentence holding a node's evidence quote starts in `text` (an
+   id for «the same sentence»), or nil when the quote is not found."
+  [text c]
+  (let [low (str/lower-case (str text))
+        a (-> (str (:evidence c))
+              ;; i18n-ignore: the ingestion's stored page-marker format
+              (str/replace #"\[стр\. \d+\]" "") str/trim str/lower-case)
+        a (subs a 0 (min 60 (count a)))
+        at (when (>= (count a) 6) (str/index-of low a))]
+    (when at
+      (inc (apply max -1 (keep #(str/last-index-of (subs low 0 at) %) ["." "!" "?" "\n"]))))))
 
 (defn missing-steps
   "The numbered steps no node sits under, list by list: [{:parent :list-text
@@ -1219,6 +1247,11 @@
     (cond
       (and (seq a->b) (>= (count a->b) (count b->a))) {:from (:id a) :to (:id b) :why a->b}
       (seq b->a) {:from (:id b) :to (:id a) :why b->a}
+      ;; WEAK: both quoted from one sentence — asked after every stronger
+      ;; signal, before pure guesses; a barrel and «переводит вино в ёмкость»
+      ;; were never paired (real-model run 2026-11-20)
+      (and (:sentence a) (= (:sentence a) (:sentence b)))
+      {:from (:id a) :to (:id b) :why [{:sig :same-sentence}] :weak? true}
       :else nil)))
 
 ;; i18n-ignore: the ingestion's stored page-marker format
@@ -1440,7 +1473,7 @@
                    (assoc s :a (:id a) :b (:id b) :signalled? true)
                    {:a (:id a) :b (:id b) :from (:id a) :to (:id b) :why [] :signalled? false}))]
     (->> (if typed? (keep typed scored) scored)
-         (sort-by (complement :signalled?)) (take limit) vec))))
+         (sort-by #(cond (not (:signalled? %)) 2 (:weak? %) 1 :else 0)) (take limit) vec))))
 
 (defn topo-order
   "Prerequisites first. Deterministic (sorted tie-break). `type` = the
