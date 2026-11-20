@@ -132,12 +132,12 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   // a relation's words and flags, edited from a type's popup — every edge of it at once
   check(await page.$('.relation-props .relation-row') !== null, 'the type\'s popup lists its relations');
   await page.evaluate(() => {
-    const r = [...document.querySelectorAll('.relation-row')].find((x) => /поставляет-для/.test(x.textContent));
+    const r = [...document.querySelectorAll('.relation-row')].find((x) => x.querySelector('.rel-id').value === 'поставляет-для');
     const i = r.querySelector('.rel-label'); i.focus(); i.select();
   });
   await page.keyboard.type('снабжает'); await page.keyboard.press('Enter'); await sleep(400);
   check(/:поставляет-для "[^"]+" \{:label "снабжает"\}/.test(await log()), 'renaming a relation writes its edges');
-  await page.evaluate(() => [...document.querySelectorAll('.relation-row')].find((x) => /поставляет-для/.test(x.textContent)).querySelector('.rel-ordering').click());
+  await page.evaluate(() => [...document.querySelectorAll('.relation-row')].find((x) => x.querySelector('.rel-id').value === 'поставляет-для').querySelector('.rel-ordering').click());
   await sleep(400);
   check(/порядк|ordering|bad-profile|Онтология/i.test(await page.$eval('.error', (e) => e.textContent).catch(() => '')),
     'a second ordering relation is refused, in words');
@@ -165,9 +165,9 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await tapNode('Поставщик'); await tapNode(procTitle.trim().slice(0, 7));
   await page.type('.new-relation-label', 'временная'); await page.click('.new-relation-add'); await sleep(500);
   await page.goto(BASE + '#/c/' + encodeURIComponent(sup), { waitUntil: 'networkidle0' }); await sleep(500);
-  await page.evaluate(() => [...document.querySelectorAll('.relation-row')].find((x) => /временная/.test(x.textContent)).querySelector('.rel-delete').click());
+  await page.evaluate(() => [...document.querySelectorAll('.relation-row')].find((x) => x.querySelector('.rel-id').value === 'временная').querySelector('.rel-delete').click());
   await sleep(400);
-  check(/:edge-remove "[^"]+" :временная/.test(await log()) && !(await page.$$eval('.relation-row', (rs) => rs.some((r) => /временная/.test(r.textContent)))),
+  check(/:edge-remove "[^"]+" :временная/.test(await log()) && !(await page.$$eval('.relation-row', (rs) => rs.some((r) => r.querySelector('.rel-id').value === 'временная'))),
     'a whole relation is deleted from the type\'s popup');
 
   // a competency question is raised in the ontology graph and checked in the graphs using it
@@ -238,6 +238,31 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   const lm = await log();
   check(/:ontology-copy/.test(lm.split(':node-set').slice(-2).join('')) || /:kind :role/.test(lm), 'one change: the new copy and the node retyped');
   check(await page.$('.migration') === null && /:node-set "[^"]+" \{:kind :role\}/.test(lm), 'the graph is on the new version; its process node is a role now');
+
+  // a relation's ID renamed in the ontology: the graphs using it move their links (2026-11-20)
+  const app = (edn) => page.evaluate((x) => { const r = loretile.store.append_BANG_(cljs.reader.read_string(x)); return r ? cljs.core.pr_str(r) : null; }, edn);
+  await G.openGraph(page, BASE, /^Онтология: Магазин$/);
+  check(await app('{:ev/type :change :ops [[:edge-set "role" :курирует "role" {:label "курирует"}]]}') === null, 'the ontology gains a relation «курирует»');
+  await G.openGraph(page, BASE, /^Магазин$/);
+  await page.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(400);
+  await addNode('Кассир', 'role');
+  const cashier = await idOf('Кассир');
+  check(await app(`{:ev/type :change :ops [[:edge-set "${pay}" :курирует "${cashier}" {:с "понедельника"}]]}`) === null, 'and the graph using it links two roles with it');
+  await G.openGraph(page, BASE, /^Онтология: Магазин$/);
+  await page.goto(BASE + '#/c/role', { waitUntil: 'networkidle0' }); await sleep(500);
+  await page.evaluate(() => {
+    const i = [...document.querySelectorAll('.relation-row .rel-id')].find((x) => x.value === 'курирует'); i.focus(); i.select();
+  });
+  await page.keyboard.type('наблюдает'); await page.keyboard.press('Enter'); await sleep(500);
+  await page.screenshot({ path: path.join(__dirname, 'shot-relation-id.png') });
+  const lo = await log();
+  check(/:edge-set "role" :наблюдает "role" \{[^}]*:label "курирует"/.test(lo) && /:relation-renames \{:курирует :наблюдает\}/.test(lo),
+    'renaming its id moves its edges, words kept, and records the rename');
+  await G.openGraph(page, BASE, /^Магазин$/);
+  const lr = await log();
+  check(new RegExp(`:edge-set "${pay}" :наблюдает "${cashier}" \\{:с "понедельника"\\}`).test(lr), 'the graph using it moved its link to the new id, its property kept');
+  await page.goto(BASE + '#/ontology', { waitUntil: 'networkidle0' }); await sleep(400);
+  check(await page.$('.migration') === null, 'and is not held back — nothing to migrate');
 
   // properties seen and searched (2026-11-20): the palette, a property under titles, the filter
   await page.goto(BASE + '#/c/' + encodeURIComponent(pay), { waitUntil: 'networkidle0' }); await sleep(500);

@@ -117,6 +117,8 @@
                                                                (:gone c))))))
                         (:conflicts r))]
         (store/replace-log! gid (into theirs keep))
+        ;; an ontology graph changed elsewhere: the graphs bound to it here take the new copy
+        (when (:ontology-graph? (fold/kg (store/graph-events gid))) (store/sync-bound! gid))
         (when (= gid @store/current) (show-activity! before remote (count found)))
         (swap! sync-state assoc gid {:seq new-seq :pending (mapv :ev/id keep)})
         (when (seq found) (swap! conflicts update gid (fnil into []) found))))

@@ -1816,7 +1816,12 @@
          ^{:key (str rt (:label w) (:inverse w))}
          [:div.relation-row
           [:div.relation-head
-           [:code (name rt)]
+           ;; its id (what exports and the agent read): renamed here, the links
+           ;; of every graph using this ontology follow (store/rename-relation!)
+           [:input.rel-id {:default-value (name rt) :aria-label (t :ui/rel-id) :title (t :ui/rel-id)
+                           :spell-check false
+                           :on-key-down #(when (= "Enter" (.-key %)) (.blur (.-target %)))
+                           :on-blur #(store/rename-relation! rt (.. % -target -value))}]
            ;; the whole relation: every edge of it, in one change
            [:button.icon-btn.rel-delete
             {:title (t :ui/delete) :aria-label (t :ui/delete)
@@ -2333,6 +2338,7 @@
        :duplicate (t :ui/error-duplicate)
        :in-course (t :ui/error-in-course)
        :storage-full (t :ui/error-storage-full)
+       :relation-exists (t :ui/error-relation-exists {"{id}" detail})
        :invalid-schema (t :ui/error-invalid-schema {"{detail}" (pr-str detail)})
        :unknown-relation (t :ui/error-unknown-relation {"{detail}" (pr-str detail)})
        :relation-misfit (t :ui/error-relation-misfit {"{detail}" (pr-str detail)})

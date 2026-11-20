@@ -515,6 +515,19 @@
       (when-let [latest (some-> (ontology-latest oid) profile/normalize)]
         (when-let [b (fold/sync-breaks k latest)] {:breaks b :latest latest})))))
 
+(defn- relink-ops
+  "The ops that move every edge of `k` whose relation is in `relations`
+   {old new-or-:remove} to the new relation (its own properties kept), or
+   remove it."
+  [k relations]
+  (mapcat (fn [{:keys [from to type] :as edge}]
+            (when-let [n (get relations type)]
+              (cond-> [[:edge-remove from type to]]
+                (not= :remove n)
+                (conj [:edge-set from n to (into (select-keys edge [:justification :inferred?])
+                                                 (fold/edge-props edge))]))))
+          (:edges k)))
+
 (defn migrate!
   "Unstick the open graph (2026-11-20): it refused its ontology's newest
    version because the version drops types or relations its data uses.
@@ -528,18 +541,34 @@
         e (copy-event oid)
         retype (for [[id c] (:concepts k) :let [n (get-in plan [:types (:kind c)])] :when n]
                  [:node-set id {:kind n}])
-        relink (mapcat (fn [{:keys [from to type] :as edge}]
-                         (when-let [n (get-in plan [:relations type])]
-                           (cond-> [[:edge-remove from type to]]
-                             (not= :remove n)
-                             (conj [:edge-set from n to (into (select-keys edge [:justification :inferred?])
-                                                              (fold/edge-props edge))]))))
-                       (:edges k))]
+        relink (relink-ops k (:relations plan))]
     (if-not e
       {:error :no-whole-ontology}
       (let [err (append! {:ev/type :change :ops (vec (concat (:ops e) retype relink))})]
         (when (nil? err) (swap! sync-refused dissoc @current))
         err))))
+
+(defn rename-relation!
+  "In the open ontology graph: relation `old` gets the id written `text`
+   (2026-11-20). ONE change — every edge of it moved to the new id, its
+   words kept — and the rename recorded in the graph property
+   `:relation-renames`, so a graph using the ontology moves its own links
+   when it takes the new copy (`sync-bound!`). nil when done or nothing to
+   do, else the error."
+  [old text]
+  (let [k (kg)
+        new (keyword (str/replace (str/lower-case (str/trim (str text))) #"\s+" "-"))
+        taken (set (map :type (:edges k)))]
+    (cond
+      (or (str/blank? (str text)) (= new old)) nil
+      (taken new) (reset! last-error {:error :relation-exists :detail (name new)})
+      :else (append! {:ev/type :change
+                      :ops (vec (concat
+                                 (for [{:keys [from to type] :as e} (:edges k) :when (= old type)
+                                       op [[:edge-remove from old to]
+                                           [:edge-set from new to (dissoc e :from :to :type :changed-by :changed-at)]]]
+                                   op)
+                                 [[:graph-set {:relation-renames (assoc (get-in k [:graph :relation-renames]) old new)}]]))}))))
 
 (defn whole-ontology?
   "Can a data graph take the ontology graph `oid` as it stands (a type, the
@@ -589,9 +618,20 @@
   [oid]
   (when-let [e (copy-event oid)]
     (doseq [{:keys [id]} (filter #(= oid (:ontology %)) @graphs)
-            :let [v (get-in (fold/kg (graph-events id)) [:ontology :version])]
+            :let [k (fold/kg (graph-events id))
+                  v (get-in k [:ontology :version])]
             :when (not= v (get-in e [:ops 0 1 :ontology-version]))]
-      (let [err (append-to-log! id (assoc e :ev/ns id :ev/id (str (random-uuid))))]
+      ;; a RENAMED relation (2026-11-20): the graph's own links move to the new
+      ;; id in the same change that takes the copy — never a stuck graph
+      (let [renames (get-in (fold/kg (graph-events oid)) [:graph :relation-renames])
+            now (set (map :id (get-in e [:ops 0 1 :ontology-copy :relations])))
+            follow (fn [r] (loop [r r seen #{}] (if-let [n (and (not (seen r)) (get renames r))] (recur n (conj seen r)) r)))
+            plan (into {} (for [{:keys [type]} (:edges k)
+                                :let [n (follow type)]
+                                :when (and (not= n type) (now n) (not (now type)))]
+                            [type n]))
+            e (update e :ops (fn [ops] (vec (concat ops (relink-ops k plan)))))
+            err (append-to-log! id (assoc e :ev/ns id :ev/id (str (random-uuid))))]
         (swap! sync-refused (if (and err (:error err)) #(assoc % id err) #(dissoc % id)))))))
 
 (defn- vocabulary-ops

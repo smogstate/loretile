@@ -697,6 +697,8 @@
    :ui/error-graph-switched {:ru "В другой вкладке открыт граф «{title}» — здесь теперь он." :de "In einem anderen Tab wurde der Graph „{title}“ geöffnet — er ist jetzt auch hier offen." :en "Another tab opened the graph “{title}” — it is open here now too."}
    :ui/error-demo-unavailable {:ru "Демо-граф не загрузился — проверьте соединение и попробуйте ещё раз." :de "Der Demo-Graph wurde nicht geladen — Verbindung prüfen und erneut versuchen." :en "The demo graph did not load — check the connection and try again."}
    :ui/error-bad-object-link {:ru "Связать можно только два разных материала одной темы." :de "Verknüpfen lassen sich nur zwei verschiedene Materialien desselben Themas." :en "Only two different materials of the same topic can be linked."}
+   :ui/rel-id {:ru "Идентификатор связи (его читают экспорт и агент)" :de "Kennung der Beziehung (Export und Agent lesen sie)" :en "The relation's id (exports and the agent read it)"}
+   :ui/error-relation-exists {:ru "Связь «{id}» уже есть — выберите другой идентификатор" :de "Die Beziehung „{id}“ gibt es schon — wählen Sie eine andere Kennung" :en "A relation «{id}» already exists — choose another id"}
    :ui/error-storage-full {:ru "Хранилище браузера переполнено — последнее изменение не сохранилось. Экспортируйте граф или удалите старые беседы"
                            :de "Browser-Speicher voll — die letzte Änderung wurde nicht gespeichert. Graph exportieren oder alte Gespräche löschen"
                            :en "Browser storage is full — the last change was not saved. Export the graph or remove old conversations"}
