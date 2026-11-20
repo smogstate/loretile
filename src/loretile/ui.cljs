@@ -161,8 +161,26 @@
 
 (defonce sim-state (atom {:sim nil :sig nil}))
 (declare vb fit-all!)   ; the viewport and framing, defined with the pan/zoom code below
-(defonce positions (r/atom {}))          ; id -> {:x :y} — render source
+;; id -> {:x :y :node} — what renders subscribe to. AT SCALE (2026-11-20): a
+;; tick no longer re-renders the map through React (500 nodes ran at 6 fps):
+;; it writes the moved nodes and edges straight into the svg (`draw-live!`),
+;; every render reads the LIVE spot off the sim's node object (`pos`), and
+;; this atom is republished every tick only for small graphs — past
+;; `live-only` nodes only when the layout settles (measured 2026-11-20,
+;; release build, 1000 nodes: 2 → 15 fps, a tap 1 s → 0.1 s).
+(defonce positions (r/atom {}))
+(def ^:private live-only 150)
+(defonce ^:private node-els (js/Map.))   ; id -> the node's <g> (and a ghost's)
+(defonce ^:private edge-els (js/Map.))   ; key -> #js [el from to kind] kind: "line" | "loop" | "text"
 (defonce drag-id (atom nil))
+
+(defn- live [{:keys [node] :as p}]
+  (if node {:x (.-x ^js node) :y (.-y ^js node) :node node} p))
+
+(defn- pos
+  "Where node `id` is now (subscribes the render to `positions`)."
+  [id]
+  (some-> (get @positions id) live))
 
 (def R 27)                                ; node radius
 (defonce canvas-w (atom 900))            ; the svg's width in px, for the zoom level
@@ -188,11 +206,59 @@
                     (swap! memo assoc id v) v)))]
       (into {} (map (fn [id] [id (d id #{})]) ids)))))
 
+(defn- edge-geom
+  "The shape of an edge between spots `p` (its `to`) and `q` (its `from`):
+   {:d} for a loop (a type related to itself), else {:x1 :y1 :x2 :y2}
+   shortened to the node rims."
+  [p q loop?]
+  (if loop?
+    (let [{:keys [x y]} p]
+      {:d (str "M" (- x 7) "," (- y R) " C" (- x 28) "," (- y R 38) " "
+               (+ x 28) "," (- y R 38) " " (+ x 7) "," (- y R))})
+    (let [dx (- (:x q) (:x p)) dy (- (:y q) (:y p))
+          d (max 1 (js/Math.sqrt (+ (* dx dx) (* dy dy))))
+          ux (/ dx d) uy (/ dy d)
+          r1 (+ R 2) r2 (+ R 6)]
+      {:x1 (+ (:x p) (* ux r1)) :y1 (+ (:y p) (* uy r1))
+       :x2 (- (:x q) (* ux r2)) :y2 (- (:y q) (* uy r2))})))
+
+(defn- text-spot [p q loop?]
+  (if loop? [(:x p) (- (:y p) R 34)] [(/ (+ (:x p) (:x q)) 2) (/ (+ (:y p) (:y q)) 2)]))
+
+(defn- draw-live!
+  "One tick: move the drawn nodes and edges to the sim's spots in the svg
+   itself — React is not asked (it re-renders only when the graph changes
+   or `positions` is published)."
+  [by-id]
+  (let [at (fn [id] (when-let [^js n (get by-id id)] {:x (.-x n) :y (.-y n)}))]
+    (.forEach node-els (fn [^js el id] (when-let [{:keys [x y]} (at id)]
+                                          (.setAttribute el "transform" (str "translate(" x "," y ")")))))
+    (.forEach edge-els
+              (fn [^js v _]
+                (let [[^js el from to kind] v
+                      p (at to) q (at from)]
+                  (when (and p q)
+                    (case kind
+                      "sel" (do (.setAttribute el "x" (:x p)) (.setAttribute el "y" (+ (:y p) R 16)))
+                      "text" (let [[x y] (text-spot p q (= from to))]
+                               (.setAttribute el "x" x) (.setAttribute el "y" (- y 4)))
+                      "loop" (.setAttribute el "d" (:d (edge-geom p q true)))
+                      (let [{:keys [x1 y1 x2 y2]} (edge-geom p q false)]
+                        (.setAttribute el "x1" x1) (.setAttribute el "y1" y1)
+                        (.setAttribute el "x2" x2) (.setAttribute el "y2" y2)))))))))
+
+(defn- el-ref
+  "A ref callback keeping `k`'s element in `m` (nil — React 19 treats a
+   returned function as the cleanup)."
+  [^js m k & [v]]
+  (fn [el] (if el (.set m k (if v (to-array (cons el v)) el)) (.delete m k)) nil))
+
 (defn- build-sim!
   "(Re)build the simulation when the node/edge signature changes; keep
    surviving nodes at their old spots so the graph doesn't reshuffle.
-   ponytail: full reagent rerender per tick — fine to ~150 nodes, swap to
-   direct DOM writes if a real KG outgrows it."
+   A tick writes the svg directly (`draw-live!`, see `positions`).
+   ponytail: one svg element per node and edge — past ~1000 nodes a canvas
+   or level-of-detail culling is the next step."
   [kg w h]
   (let [ids (concat (keys (:concepts kg))
                     (map key (filter #(= :concept (:of (val %))) (:proposals kg))))
@@ -237,14 +303,22 @@
                                     (.strength (fn [^js n] (if (.-col n) 0.7 0.06)))))
                     (.force "y" (-> (d3f/forceY (/ h 2)) (.strength 0.08)))
                     (.force "collide" (d3f/forceCollide (if layers? (+ R 16) (+ R 34)))))]
-        (.on sim "tick"
-             (fn []
-               (reset! positions
-                       ;; no clamp to the canvas any more: the map pans and
-                       ;; zooms, and a clamp flattened the ring layout's
-                       ;; outer rings into one row at the bottom edge
-                       (into {} (map (fn [n] [(.-id n) {:x (.-x n) :y (.-y n) :node n}])
-                                     nodes)))))
+        (let [publish! #(reset! positions
+                                ;; no clamp to the canvas any more: the map pans and
+                                ;; zooms, and a clamp flattened the ring layout's
+                                ;; outer rings into one row at the bottom edge
+                                (into {} (map (fn [n] [(.-id n) {:x (.-x n) :y (.-y n) :node n}])
+                                              nodes)))
+              by-id (into {} (map (fn [n] [(.-id n) n]) nodes))
+              small? (<= (count ids) live-only)]
+          (.on sim "tick"
+               (fn []
+                 (draw-live! by-id)
+                 ;; a publish re-renders every node and edge: ~1 s at 1000
+                 ;; nodes — a big graph publishes only once it has settled
+                 (when small? (publish!))))
+          (.on sim "end.publish" publish!)
+          (publish!))
         (reset! sim-state {:sim sim :sig sig})
         ;; a graph seen for the first time (nothing survives from the old
         ;; positions) opens framed whole, not at 1:1 on its middle
@@ -343,24 +417,20 @@
   "Arrow points prerequisite → dependent (learning direction).
    from = dependent, to = prerequisite; shortened to the node rims."
   [{:keys [from to type ghost?]} dim? & [reads?]]
-  (let [p (get @positions to) q (get @positions from)]
+  (let [p (pos to) q (pos from)]
     (cond
       (not (and p q)) nil
       ;; a relation from a type to itself (an ontology graph: process
       ;; triggers process) — a loop over the node, a line would be invisible
       (= from to)
-      (let [{:keys [x y]} p]
-        [:path {:d (str "M" (- x 7) "," (- y R) " C" (- x 28) "," (- y R 38) " "
-                        (+ x 28) "," (- y R 38) " " (+ x 7) "," (- y R))
-                :fill "none"
-                :class (str "edge edge-loop edge-" (name type) (when dim? " dim"))}])
+      [:path {:d (:d (edge-geom p q true))
+              :ref (el-ref edge-els [from type to ghost?] [from to "loop"])
+              :fill "none"
+              :class (str "edge edge-loop edge-" (name type) (when dim? " dim"))}]
       :else
-      (let [dx (- (:x q) (:x p)) dy (- (:y q) (:y p))
-            d (max 1 (js/Math.sqrt (+ (* dx dx) (* dy dy))))
-            ux (/ dx d) uy (/ dy d)
-            r1 (+ R 2) r2 (+ R 6)]
-        [:line {:x1 (+ (:x p) (* ux r1)) :y1 (+ (:y p) (* uy r1))
-                :x2 (- (:x q) (* ux r2)) :y2 (- (:y q) (* uy r2))
+      (let [{:keys [x1 y1 x2 y2]} (edge-geom p q false)]
+        [:line {:x1 x1 :y1 y1 :x2 x2 :y2 y2
+                :ref (el-ref edge-els [from type to ghost?] [from to "line"])
                 :class (str "edge edge-" (name type) (when dim? " dim") (when ghost? " edge-ghost"))
                 :marker-end (when (= :requires type) "url(#arrow)")
                 ;; outside learning an arrow shows the reading direction:
@@ -373,11 +443,12 @@
   "A relation's name at the middle of its edge (above the loop of a type →
    same type)."
   [{:keys [from to type]} label]
-  (let [p (get @positions to) q (get @positions from)]
+  (let [p (pos to) q (pos from)]
     (when (and p q (seq label))
-      (let [[x y] (if (= from to) [(:x p) (- (:y p) R 34)] [(/ (+ (:x p) (:x q)) 2) (/ (+ (:y p) (:y q)) 2)])]
+      (let [[x y] (text-spot p q (= from to))]
         ;; tapping it opens the edge's properties in its source node's popup
         [:text.edge-text {:x x :y (- y 4) :text-anchor "middle"
+                          :ref (el-ref edge-els [:text from type to] [from to "text"])
                           :on-pointer-down #(.stopPropagation %)
                           :on-click #(do (reset! edge-open [from type to]) (goto! (str "#/c/" (js/encodeURIComponent from))))}
          label]))))
@@ -603,7 +674,7 @@
 (defn- fit-all!
   "Frame every node (kintale fit-to-ids): the viewport follows a rearrange."
   [pad]
-  (let [ps (vals @positions)]
+  (let [ps (map live (vals @positions))]
     (when (seq ps)
       (let [xs (map :x ps) ys (map :y ps)
             x0 (- (apply min xs) pad) x1 (+ (apply max xs) pad)
@@ -629,13 +700,13 @@
                  (first (sort-by (fn [id] [(- (count (adj id #{}))) id]) ids)))
         rings (bfs-rings root adj ids)
         by-ring (group-by val rings)
-        ^js hub (:node (get @positions root))
+        ^js hub (:node (pos root))
         hx (if hub (.-x hub) 0) hy (if hub (.-y hub) 0)
         step 170]
     (doseq [[d members] by-ring
             :let [ms (sort (map key members)) n (count ms)]
             [i id] (map-indexed vector ms)]
-      (when-let [^js nd (:node (get @positions id))]
+      (when-let [^js nd (:node (pos id))]
         (let [a (+ (* 2 js/Math.PI (/ i (max n 1))) (* d 0.4))
               r (* d step)
               x (+ hx (* r (js/Math.cos a))) y (+ hy (* r (js/Math.sin a)))]
@@ -655,7 +726,7 @@
 (defn node [kg id focus & [mark]]
   ;; `mark` = :edit | :remove | :other — a merge-file change waiting on its card
   (let [c (get-in kg [:concepts id])
-        p (get @positions id)
+        p (pos id)
         ;; status, glyph and material counts are LEARNING marks: a type or a
         ;; business node is just a node (UX 2026-11-19)
         learnable? (profile/learnable? (fold/profile kg))
@@ -681,6 +752,7 @@
                        ;; well-connected topics keep their titles when zoomed far out
                        (when ((hubs kg) id) " hub"))
            :transform (str "translate(" (:x p) "," (:y p) ")")
+           :ref (el-ref node-els id)
            :tab-index 0
            :on-pointer-down (fn [^js e]
                               (.stopPropagation e)
@@ -697,10 +769,10 @@
            :on-pointer-move (fn [^js e]
                               (if (> (count @pointers) 1)
                                 ;; second finger down → this is a pinch, not a drag
-                                (do (set! (.-dragged ^js (:node (get @positions id))) true)
+                                (do (set! (.-dragged ^js (:node (pos id))) true)
                                     (bg-move! e))
                               (when (= @drag-id id)
-                                (let [n ^js (:node (get @positions id))
+                                (let [n ^js (:node (pos id))
                                       [x0 y0] (.-down n)
                                       far? (or (.-dragged n)
                                                (> (js/Math.hypot (- (.-clientX e) x0) (- (.-clientY e) y0)) 6))]
@@ -714,7 +786,7 @@
                                       (set! (.-fx n) x) (set! (.-fy n) y)))))))
            :on-pointer-up (fn [^js e]
                             (swap! pointers dissoc (.-pointerId e))
-                            (let [n ^js (:node (get @positions id))]
+                            (let [n ^js (:node (pos id))]
                               (reset! drag-id nil)
                               ;; a TAP leaves the node exactly as it was — a
                               ;; rearranged (pinned) node stayed pinned; only
@@ -781,9 +853,10 @@
 (defn ghost-node
   "Chat proposal on the map before accept: kintale's dashed-ring ghost."
   [[id prop]]
-  (let [p (get @positions id)]
+  (let [p (pos id)]
     (when p
       [:g.node.node-ghost {:transform (str "translate(" (:x p) "," (:y p) ")")
+                           :ref (el-ref node-els id)
                            ;; the map captures the pointer on press, which ate this
                            ;; click — a ghost never opened anything
                            :on-pointer-down #(.stopPropagation %)
@@ -867,7 +940,7 @@
            [:marker#arrow {:viewBox "0 0 10 10" :refX 8 :refY 5
                            :markerWidth 7 :markerHeight 7 :orient "auto-start-reverse"}
             [:path {:d "M 0 1 L 9 5 L 0 9 z"}]]]
-          @positions   ; deref so ticks re-render
+          @positions   ; deref: a publish re-renders (a tick only moves elements — draw-live!)
           (let [focus (or (ego-focus kg) (course-focus kg))
                 lit (or (:ids focus) (some-> (:closure focus) set))
                 marks (chat/pending-marks)]
@@ -887,8 +960,9 @@
              ;; labels — re-ordering the nodes instead moved the tapped one mid-tap
              ;; and swallowed the click that completes a link
              (let [sel (focus-root)]
-               (when-let [p (and sel (get @positions sel))]
-                 [:text.node-label.sel-label {:x (:x p) :y (+ (:y p) R 16) :pointer-events "none"}
+               (when-let [p (and sel (pos sel))]
+                 [:text.node-label.sel-label {:x (:x p) :y (+ (:y p) R 16) :pointer-events "none"
+                                              :ref (el-ref edge-els :sel-label [sel sel "sel"])}
                   (get-in kg [:concepts sel :title])]))])
           (for [g (filter #(= :concept (:of (val %))) (:proposals kg))]
             ^{:key (key g)} [ghost-node g])])])}))
@@ -2305,7 +2379,7 @@
    (search, the not-ready list): pans, keeps the zoom. The panel's real
    rectangle is left clear — beside it on a wide screen, below it on a phone."
   [id]
-  (when-let [p (and @vb (get @positions id))]
+  (when-let [p (and @vb (pos id))]
     (let [{:keys [cx cy w h]} @vb
           k (/ w (max 1 @canvas-w))
           ^js svg (js/document.querySelector ".map-wrap svg.graph")

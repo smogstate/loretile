@@ -10,7 +10,7 @@ Learning platform: knowledge graph of small learning objects, per-learner master
 | area | how it is built | decided in | checks (`test/<name>-check.js`) |
 |---|---|---|---|
 | Toolchain, schema, fold, store | `wiki/Code.md#toolchain-and-the-core` | `wiki/Architecture.md` · `wiki/Data-Model.md` | `npm test` (fold_test), storage, review, then every check |
-| Map, editor, layout, removal | `wiki/Code.md#the-map-and-the-editor-uicljs` | `wiki/UX.md` | map, editor, edit |
+| Map, editor, layout, removal · the map at scale (ticks write the svg directly) | `wiki/Code.md#the-map-and-the-editor-uicljs` | `wiki/UX.md` | map, editor, edit, scale |
 | Intake chat, attachments, intake review | `wiki/Code.md#the-intake-chat-chatcljs-llmcljs` | `wiki/Authoring.md` | intake, split, steps, chat, formats, pdf, tools, locale, marks (+ ontology, interview, gaps, probe: the prompts are profile-aware) |
 | Assistant sittings | `wiki/Code.md#assistant-sittings-sessioncljs` | `wiki/Assistant-Design-2026-10-02.md` | session |
 | Demo graphs | `wiki/Code.md#demo-graphs` | `wiki/Continuous-Learning.md` | fold_test `demo-log-is-sound`; every browser check loads the SQL demo |
@@ -77,6 +77,7 @@ CLJS SPA, kintale toolchain: shadow-cljs + reagent + malli. `npm run dev` → ht
 - CLJS regex literals have no `u` flag — `\p{L}` matches nothing; use explicit classes / split on spaces and punctuation.
 - A controlled input whose value flows through parent props drops fast keystrokes (the map redraws every physics tick) — `grow-textarea`, the palette's `.cmd-input`, the pencil edit forms and the add forms are semi-controlled for that reason.
 - Never deref an atom inside a lazy `for` in a render — the component never re-renders; deref once at the top.
+- A render reads a node's spot with `ui/pos` (live, off the sim's node), never `(get @positions id)` — past 150 nodes `positions` is only republished when the layout settles.
 - The map sim measures `svg.graph`, never the first svg (rail icons are svgs). A ghost/button inside the map needs `:on-pointer-down` stopPropagation or the svg's pointer capture eats the click.
 - `loretile.export` is a reserved word in JS output — hence `agent_md.cljc`.
 
