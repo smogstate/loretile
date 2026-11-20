@@ -16,6 +16,7 @@
             [loretile.session :as session]
             [loretile.tour :as tour]
             [loretile.store :as store]
+            [loretile.sync :as sync]
             [loretile.tools :as tools]
             [loretile.vectors :as vectors]
             [loretile.i18n :as i18n :refer [t tn]]))
@@ -2322,6 +2323,45 @@
       [:button.primary.type-draft-accept {:disabled (or (foreign?) (:refused c)) :on-click #(accept-type-draft! c)} (t :chat/type-draft-add)]
       [:button {:disabled (foreign?) :on-click #(resolve-card! c)} (t :chat/discard)]]]))
 
+(defn- conflict-what
+  "«title» of a node, or of a link — what a conflict is about."
+  [kg [ent k]]
+  (let [nt #(get-in kg [:concepts % :title] %)]
+    (case (first ent)
+      :node (t :chat/conflict-prop {"{key}" (name k) "{node}" (nt (second ent))})
+      :edge (let [[_ a ty b] ent] (t :chat/conflict-prop {"{key}" (name k) "{node}" (str (nt a) " —" (name ty) "→ " (nt b))}))
+      :graph (t :chat/conflict-prop {"{key}" (name k) "{node}" (t :chat/conflict-graph)}))))
+
+(defmethod card-view :conflict [{c :data}]
+  (let [kg (store/kg)
+        nt #(get-in kg [:concepts % :title] %)
+        btn (fn [cls choice label] [:button {:class cls :on-click #(sync/resolve! c choice)} label])]
+    [:div.card.card-conflict
+     [:span.card-tag.tag-conflict (t :chat/conflict-tag)]
+     (case (:kind c)
+       (:same-property :overridden)
+       [:<>
+        (for [[ek {:keys [theirs mine]}] (:clash c)]
+          ^{:key (pr-str ek)}
+          [:div.conflict-row
+           [:b (conflict-what kg ek)]
+           [:p (t :chat/conflict-theirs) " " [:span.conflict-val (str theirs)]]
+           [:p (t :chat/conflict-mine) " " [:span.conflict-val (str mine)]]])
+        [:p.muted (t (if (= :overridden (:kind c)) :chat/conflict-overridden-lead :chat/conflict-same-lead))]
+        [:div.row
+         (btn "primary conflict-mine" :mine (t :chat/conflict-keep-mine))
+         (btn "conflict-theirs" :theirs (t :chat/conflict-keep-theirs))]]
+       :removed
+       [:<>
+        [:b (t :chat/conflict-removed {"{what}" (clojure.string/join ", " (for [[kind id] (:gone c)] (if (= :node kind) (nt id) (name kind))))})]
+        [:div.row
+         (btn "primary conflict-mine" :mine (t :chat/conflict-restore))
+         (btn "conflict-theirs" :theirs (t :chat/conflict-accept-removal))]]
+       [:<>
+        [:b (t :chat/conflict-refused)]
+        [:p.muted (pr-str (:error c))]
+        [:div.row (btn "conflict-theirs" :theirs (t :chat/conflict-drop-mine))]])]))
+
 (defmethod card-view :triage [{:keys [data] :as c}]
   (let [{:keys [doc what ontology]} data
         choose! (fn [k v] (swap! cards (fn [cs] (mapv #(if (= % c) (assoc-in % [:data k] v) %) cs))))
@@ -2668,8 +2708,11 @@
         waiting (- (count pile) (count ready))
         total (+ @decided (count @cards))]
     [:div.cards
-     [:h3 (t :chat/reviewed {"{d}" @decided "{n}" total})]
-     [:div.bar [:div {:style {:width (str (* 100 (/ @decided (max 1 total))) "%")}}]]
+     ;; the review counter counts cards; a lone conflict needs none
+     (when (pos? total)
+       [:<>
+        [:h3 (t :chat/reviewed {"{d}" @decided "{n}" total})]
+        [:div.bar [:div {:style {:width (str (* 100 (/ @decided (max 1 total))) "%")}}]]])
      (when (foreign?)
        [:div.card-foreign
         (t :chat/cards-other-graph {"{title}" (store/graph-title @graph)})
@@ -2697,6 +2740,8 @@
               [:button.accept-all-links {:on-click #(accept-all! links)}
                (t (if (:ontology-graph? kg) :chat/accept-all-relations :chat/accept-all-links) {"{n}" (count links)})])
             (when (pos? held) [:span.muted.accept-all-held (t :chat/accept-all-held {"{n}" held})])])))
+     ;; a conflict waits for a person before anything else (wiki/Graph-Sync.md)
+     (for [c (sync/graph-conflicts @store/current)] ^{:key (:id c)} [card-view {:card :conflict :data c}])
      (for [c pinned] ^{:key (get-in c [:data :id])} [card-view c])
      (for [[i c] (map-indexed vector (take batch ready))]
        ^{:key (str i (get-in c [:data :id]) (get-in c [:data :from]) (get-in c [:data :to]))} [card-view c])
@@ -2765,7 +2810,7 @@
           ^{:key i} [:div {:class (str "msg msg-" (name (:who m)))} (:text m)])
         (when @busy
           (if @progress [intake-progress] [:div.msg.msg-sys (t :chat/thinking)]))]
-       (when (or (seq @cards) (seq (fold/cq-gaps (store/kg)))) [cards-panel])
+       (when (or (seq @cards) (seq (fold/cq-gaps (store/kg))) (seq (sync/graph-conflicts @store/current))) [cards-panel])
        (when-let [d @doc]
          [:div.doc-chip
           [icons/icon :clip]

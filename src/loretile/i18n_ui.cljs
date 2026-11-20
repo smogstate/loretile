@@ -88,6 +88,13 @@
    :ui/redone {:ru "Возвращено" :de "Wiederhergestellt" :en "Redone"}
    :ui/nothing-to-undo {:ru "Нечего отменять" :de "Nichts rückgängig zu machen" :en "Nothing to undo"}
    :ui/nothing-to-redo {:ru "Нечего возвращать" :de "Nichts wiederherzustellen" :en "Nothing to redo"}
+   :ui/server-graphs {:ru "На сервере" :de "Auf dem Server" :en "On the server"}
+   :ui/server-graphs-loading {:ru "Смотрю, что есть на сервере…" :de "Frage den Server…" :en "Asking the server…"}
+   :ui/server-graphs-offline {:ru "Сервер сейчас не отвечает — графы на этом устройстве работают как обычно." :de "Der Server antwortet nicht — die Graphen auf diesem Gerät funktionieren wie immer." :en "The server is not answering — the graphs on this device work as usual."}
+   :ui/server-graphs-none {:ru "Все графы сервера уже на этом устройстве." :de "Alle Graphen des Servers sind schon auf diesem Gerät." :en "Every graph on the server is already on this device."}
+   :ui/server-graph-meta {:ru "событий: {n}" :de "Ereignisse: {n}" :en "events: {n}"}
+   :ui/open {:ru "Открыть" :de "Öffnen" :en "Open"}
+   :ui/conflict-arrived {:ru "Нужно ваше решение: изменения разошлись — см. ассистента" :de "Ihre Entscheidung ist nötig: Änderungen kollidieren — siehe Assistent" :en "Your decision is needed: changes collided — see the assistant"}
    :ui/prop-icon {:ru "значок" :de "Symbol" :en "icon"}
    :ui/icon-none {:ru "без значка" :de "ohne Symbol" :en "no icon"}
    :ui/style-reset {:ru "вернуть унаследованный" :de "auf geerbt zurücksetzen" :en "back to inherited"}

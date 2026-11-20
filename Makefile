@@ -1,4 +1,4 @@
-.PHONY: install engines dev release test mcp server docker smoke dist dist-enterprise smoke-enterprise check-landing clean-tree deploy deploy-landing cert-status publish
+.PHONY: install engines dev release test checks mcp server docker smoke dist dist-enterprise smoke-enterprise check-landing clean-tree deploy deploy-landing cert-status publish
 
 # loretile.com — Object Storage website bucket behind Yandex Cloud DNS
 # (zone loretile-com: ANAME apex → bucket, _acme-challenge CNAMEs → managed
@@ -44,6 +44,18 @@ test:
 	npx shadow-cljs compile test && node out/test.js
 	@node test/i18n-check.js
 	@python3 kg/loretile/build.py --check
+
+# every browser check, in parallel (J at a time; ~20 min serial -> a few) —
+# public/ served on :8291 first (`npm run dev` or `python3 -m http.server 8291 -d public`);
+# one log per check in out/checks/, the summary in out/checks/summary.txt
+J ?= 8
+checks:
+	@mkdir -p out/checks
+	@curl -sf -o /dev/null http://localhost:8291/ || { echo "serve public/ on :8291 first"; exit 1; }
+	@ls test/*-check.js | grep -v -e i18n-check -e mcp-check -e landing-check \
+	  | xargs -P $(J) -I{} sh -c 'n=$$(basename {} -check.js); if CLJ_CONFIG=$$(mktemp -d) timeout 600 node {} > out/checks/$$n.log 2>&1; then echo "OK   $$n"; else echo "FAIL $$n"; fi' \
+	  | tee out/checks/summary.txt
+	@! grep -q FAIL out/checks/summary.txt
 
 # the MCP server over a log.edn — `claude mcp add loretile -- node $(PWD)/out/mcp.js /path/to/log.edn`
 mcp:

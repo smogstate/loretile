@@ -4,6 +4,7 @@
             [loretile.chat :as chat]
             [loretile.merge :as mrg]
             [loretile.store :as store]
+            [loretile.sync :as sync]
             [loretile.tool-defs]                ; registers the assistant's read tools
             [loretile.ui :as ui]
             [loretile.vectors :as vectors]))
@@ -18,7 +19,8 @@
     (set! (.. js/document -body -textContent) "Loretile cannot run inside a frame.")
     (do
   (store/load!)
-  (store/migrate-ontologies!)       ; a graph carrying its own ontology gets an ontology graph (wiki/Ontology-Graph.md)
+  (store/migrate-ontologies!)
+  (sync/start!)                     ; graphs kept by the server: local-first sync (wiki/Graph-Sync.md)       ; a graph carrying its own ontology gets an ontology graph (wiki/Ontology-Graph.md)
   (vectors/load!)
   (chat/restore!)
   (mrg/refresh!)                    ; merge files waiting for the open graph

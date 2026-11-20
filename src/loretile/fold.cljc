@@ -222,7 +222,7 @@
 ;; Covers the property-graph ops and the editor's own events; learning
 ;; material (objects, items, courses) waits for the learning migration.
 
-(defn- restore-node-ops
+(defn restore-node-ops
   "Ops that bring node `id` back as it stood in `kg`, with its links (a
    link to a SOURCE is not a node edge and is not restored)."
   [kg id]

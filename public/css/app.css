@@ -770,3 +770,14 @@ select.node-type { margin-bottom: 8px; }
 .filter-card { position: absolute; right: 48px; top: 0; z-index: 5; display: flex; flex-direction: column; gap: 6px; padding: 10px;
   min-width: 200px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 6px 18px rgba(0,0,0,.12); }
 .filter-card select { margin: 0; }
+
+/* graphs kept by the server: conflicts (2026-11-20) */
+.rbtn { position: relative; }
+.rbtn-badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--danger, #d03b3b); color: #fff; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.card-conflict { border-left: 4px solid var(--danger, #d03b3b); }
+.card-conflict .tag-conflict { color: var(--danger, #d03b3b); }
+.card-conflict .conflict-row { margin: 6px 0; }
+.card-conflict .conflict-row p { margin: 2px 0; }
+.card-conflict .conflict-val { font-weight: 600; }
+.server-graphs { margin-top: 18px; }

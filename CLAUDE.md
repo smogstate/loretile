@@ -25,6 +25,7 @@ Learning platform: knowledge graph of small learning objects, per-learner master
 | Undo / redo: a reversing change appended, this session's stacks per graph, Ctrl+Z / Ctrl+Shift+Z | `wiki/Code.md#undo-and-redo` | — | undo, fold_test `an-edit-is-reversed-not-erased` |
 | The one door: documents → type/relation cards in an ontology graph; a triage card when nothing is open | `wiki/Code.md#the-one-door-documents-into-graphs` | `wiki/Ontology-Graph.md` slice 3 | vocab-intake (+ intake, formats, pdf, split via `passTriage`) |
 | The property-graph core (`change` event with ops) · the ontology as an ordinary graph (types = nodes, relations = edges, vocabulary read out of it), node properties and relation words in the popup, data graphs bound by a copy, never-break sync, migration at load | `wiki/Code.md#the-ontology-as-its-own-graph` | `wiki/Ontology-Graph.md` | ontology-graph, fold_test `an-ontology-is-an-ordinary-graph` (+ ontology, interview, probe, graphs) |
+| Graphs kept by the server: local-first sync, pending edits rebased on others', conflicts as assistant cards, «На сервере» in the Graphs view | `wiki/Code.md#the-server-optional-backend` | `wiki/Graph-Sync.md` | sync, server, `sync_merge_test` |
 | What a model reads: descriptions, owner, inferred links, RDF export | `wiki/Code.md#what-a-model-reads` | `wiki/Profiles.md` § What a model reads | meaning, gaps, fold_test |
 | Authors: who added and changed what (`:ev/actor`, `author-named`, Settings name) | `wiki/Code.md#authors` | `wiki/Profiles.md` § What a model reads | author, fold_test |
 | Competency questions · interview · gaps card · probe | `wiki/Code.md#competency-questions` | `wiki/Profiles.md` § Competency questions | ontology, interview, gaps, probe |
@@ -82,7 +83,7 @@ CLJS SPA, kintale toolchain: shadow-cljs + reagent + malli. `npm run dev` → ht
 ## Tests
 
 - `make test` — fold tests (`npm test`), i18n check, the loretile graph's `--check`. `make mcp` builds + checks the MCP server. `make smoke` boots the release bundle headless.
-- Browser e2e: serve `public/` on :8291 (after `make engines`), then `node test/<name>-check.js` (needs /usr/bin/google-chrome; the list is in `wiki/Code.md` § Tests). Every browser check pins `loretile-locale=ru` and the three tour seen-flags in its localStorage setup, or the tour overlay eats its clicks. A check that uploads a non-ASCII-named fixture launches Chromium with `env: {...process.env, LANG: process.env.LANG || 'C.UTF-8'}` — with no LANG (cloud sessions) the upload silently does nothing.
+- Browser e2e: serve `public/` on :8291 (after `make engines`), then `make checks` runs EVERY check 8 at a time (`J=…`; ~5 min, ~20 serial; logs in `out/checks/`) or `node test/<name>-check.js` one (needs /usr/bin/google-chrome; the list is in `wiki/Code.md` § Tests). Every browser check pins `loretile-locale=ru` and the three tour seen-flags in its localStorage setup, or the tour overlay eats its clicks. A check that uploads a non-ASCII-named fixture launches Chromium with `env: {...process.env, LANG: process.env.LANG || 'C.UTF-8'}` — with no LANG (cloud sessions) the upload silently does nothing.
 - No Clojars (cloud sessions)? `wiki/Code.md` § Building without shadow-cljs.
 
 ## Release and deploy

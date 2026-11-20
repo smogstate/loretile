@@ -19,6 +19,7 @@
             [loretile.profile :as profile]
             [loretile.merge :as mrg]
             [loretile.store :as store]
+            [loretile.sync :as sync]
             [loretile.tour :as tour]))
 
 ;; --- routing ---------------------------------------------------------------
@@ -2910,6 +2911,32 @@
                                (.then #(when (store/import-as-new-graph! (str/replace (.-name f) #"\.edn$" "") %)
                                          (goto! "#/"))))))}]])
 
+(defn- server-graphs-section
+  "Graphs the server keeps that this device does not have yet — opening one
+   brings it here (wiki/Graph-Sync.md)."
+  []
+  (let [listed (r/atom nil)]
+    (-> (sync/server-graphs) (.then #(reset! listed %)) (.catch #(reset! listed :error)))
+    (fn []
+      (let [here (set (map :id @store/graphs))
+            others (when (sequential? @listed) (remove #(here (:id %)) @listed))]
+        [:section.server-graphs
+         [:h3 (t :ui/server-graphs)]
+         (cond
+           (nil? @listed) [:p.muted (t :ui/server-graphs-loading)]
+           (= :error @listed) [:p.muted (t :ui/server-graphs-offline)]
+           (empty? others) [:p.muted (t :ui/server-graphs-none)]
+           :else
+           [:ul.entity-list
+            (for [g others]
+              ^{:key (:id g)}
+              [:li.entity-row.server-row
+               [:span.entity-title (or (:title g) (:id g))]
+               [:span.muted.entity-meta (t :ui/server-graph-meta {"{n}" (or (:events g) 0)})]
+               [:span.entity-actions
+                [:button.open-server {:on-click #(-> (sync/open-server-graph! g) (.then (fn [id] (when id (goto! "#/")))))}
+                 (t :ui/open)]]])])]))))
+
 (defn graphs-page []
   [:div.settings-page.graphs-page
    [:a.back {:href "#/"} (t :ui/back-to-map)]
@@ -2920,7 +2947,8 @@
       [:button.add-demo {:on-click #(reset! demo-picker-open true)} [icons/icon :graph] (t :ui/demos-title)])
     [import-graph-button]]
    [:ul.entity-list
-    (for [g @store/graphs] ^{:key (:id g)} [entity-row g])]])
+    (for [g @store/graphs] ^{:key (:id g)} [entity-row g])]
+   (when sync/enabled? [server-graphs-section])])
 
 (defn settings-page []
   [:div.settings-page
@@ -3070,13 +3098,22 @@
    ;; does something even when the panel is where you cannot see it
      [:a.rbtn.nav-chat {:title (t :ui/assistant) :href (if (= :chat (:view @route)) "#/" "#/chat")
                         :class (when (= :chat (:view @route)) "on")}
-      [icons/icon :chat]]]))
+      [icons/icon :chat]
+      ;; conflicts waiting for a person (graphs kept by the server)
+      (when-let [n (not-empty (sync/graph-conflicts @store/current))]
+        [:span.rbtn-badge.conflict-badge (count n)])]]))
 
 (defn- undo-asked! []
   (if (store/undo!) (snack! (t :ui/undone)) (snack! (t :ui/nothing-to-undo))))
 
 (defn- redo-asked! []
   (if (store/redo!) (snack! (t :ui/redone)) (snack! (t :ui/nothing-to-redo))))
+
+(defonce ^:private conflict-watch
+  (add-watch sync/conflicts ::snack
+             (fn [_ _ o n]
+               (let [g @store/current]
+                 (when (> (count (get n g)) (count (get o g))) (snack! (t :ui/conflict-arrived)))))))
 
 (defn global-keys! []
   (js/window.addEventListener

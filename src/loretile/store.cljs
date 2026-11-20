@@ -27,6 +27,9 @@
 (defonce graphs (r/atom []))
 (defonce current (r/atom "demo"))
 (defonce last-error (r/atom nil))
+;; called with [graph-id event] after every event stored HERE (an edit, an
+;; undo, a copy into another graph) — loretile.sync notes it as pending
+(defonce on-append (atom nil))
 (declare import-edn! read-log sync-bound!)
 
 ;; the fold is pure, so it is cached on the identity of the event vector:
@@ -169,6 +172,9 @@
                (open! id [] (conj @graphs (cond-> {:id id :title title} personal? (assoc :personal? true)))))
       ;; a custom ontology (wiki/Profiles.md) is the FIRST event of its log
       (when profile (append! {:ev/type :profile-set :profile profile}))
+      ;; the title is a graph property too, so it travels with the log (a
+      ;; server lists graphs by it — wiki/Graph-Sync.md)
+      (append! {:ev/type :change :ops [[:graph-set {:title title}]]})
       id)))
 
 (defn profile
@@ -215,9 +221,6 @@
   []
   (graph-personal? @current))
 
-(defn rename-graph! [id title]
-  (swap! graphs (fn [gs] (mapv #(if (= id (:id %)) (assoc % :title title) %) gs)))
-  (persist-registry!))
 
 (defn forget-graph!
   "Drop a graph and its log. The open one cannot be dropped."
@@ -310,6 +313,7 @@
           ;; «saved» for work that was gone on reload (review 2026-10-16 A1)
           (if (persist!)
             (do (reset! last-error nil)
+                (some-> @on-append (apply [@current e]))
                 ;; an edit undo can reverse goes on this graph's stack; a fresh
                 ;; edit forgets what was undone (redo only follows undo)
                 (when (and (not @replaying?) (fold/undoable? e))
@@ -333,10 +337,40 @@
   [gid e]
   (let [evs (graph-events gid)]
     (or (fold/guard (fold/kg evs) e)
-        (let [evs (conj evs e)]
-          (if (= gid @current)
-            (do (reset! events evs) (when-not (persist!) (swap! events pop) false))
-            (when-not (shelve! gid evs) false))))))
+        (let [evs (conj evs e)
+              err (if (= gid @current)
+                    (do (reset! events evs) (when-not (persist!) (swap! events pop) false))
+                    (when-not (shelve! gid evs) false))]
+          (when (nil? err) (some-> @on-append (apply [gid e])))
+          err))))
+
+(defn rename-graph!
+  "The registry row and the graph's own `:title` property (it travels with
+   the log, so a server and other browsers see the new name)."
+  [id title]
+  (swap! graphs (fn [gs] (mapv #(if (= id (:id %)) (assoc % :title title) %) gs)))
+  (append-to-log! id (stamp id {:ev/type :change :ops [[:graph-set {:title title}]]}))
+  (persist-registry!))
+
+(defn replace-log!
+  "Put a graph's whole log, open or shelved — what sync does when others'
+   events are laid in. true when written."
+  [gid evs]
+  (if (= gid @current)
+    (let [before @events]
+      (reset! events (vec evs))
+      (or (persist!) (do (reset! events before) false)))
+    (shelve! gid (vec evs))))
+
+(defn add-server-graph!
+  "A graph kept by the server, brought onto this device: its log and a
+   registry row, then opened. Its id, or nil when the open graph could not
+   be shelved."
+  [{:keys [id title ontology]} evs]
+  (when (and (shelve! @current @events) (shelve! id (vec evs)))
+    (reset! graphs (conj (vec (remove #(= id (:id %)) @graphs))
+                         (cond-> {:id id :title (or title id)} ontology (assoc :ontology ontology))))
+    (when (open! id (vec evs) @graphs) id)))
 
 (defn ontology-graphs
   "The graphs on this device that describe a vocabulary (their ontology is
