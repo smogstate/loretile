@@ -582,14 +582,24 @@
                                   ;; i18n-ignore
                                   (str/join " или " (map name fits))
                                   (default-relation))]
-                        (if (seq why)
+                        (cond
+                          ;; an OPEN pair (fits = []: no relation joins these types,
+                          ;; asked because the material links them) — naming the
+                          ;; default relation here proposed «role requires indicator»
+                          ;; (real-model run 2026-11-20)
+                          (and (some? fits) (empty? fits))
+                          ;; i18n-ignore
+                          (str "  подсказка: " (str/join "; " (map signal-ru why))
+                               ;; i18n-ignore
+                               " → ни одна связь из списка эти типы не соединяет: если материал называет связь — новый type с label и inverse, иначе none")
+                          (seq why)
                           ;; i18n-ignore
                           (str "  подсказка: " (str/join "; " (map signal-ru why)) " → вероятно " from " " rel " " to)
-                          (if (seq fits)
-                            ;; i18n-ignore
-                            (str "  подсказка: сигналов нет; по типам возможно " from " " rel " " to)
-                            ;; i18n-ignore
-                            "  подсказка: нет"))))))]
+                          (seq fits)
+                          ;; i18n-ignore
+                          (str "  подсказка: сигналов нет; по типам возможно " from " " rel " " to)
+                          ;; i18n-ignore
+                          :else "  подсказка: нет")))))]
     ;; i18n-ignore
     (str "Пары тем (" (count cands) "):\n" (str/join "\n" (map line cands)))))
 
@@ -1227,6 +1237,14 @@
 
 (declare content-intake! resolve-card!)
 
+(defn- doc-title
+  "What a document calls itself: its first markdown heading, else its file
+   name without the extension («Онтология: priemka.md» named a derived
+   ontology after the file — real-model run 2026-11-20)."
+  [{:keys [name text]}]
+  (or (some->> (re-find #"(?m)^#{1,3}\s+(.+)$" (str text)) second str/trim not-empty)
+      (str/replace (str name) #"\.[A-Za-z0-9]{1,5}$" "")))
+
 (defn triage-go!
   "The author's answer: the open (empty) graph becomes an ontology and the
    document is read for types and relations — or the graph takes the chosen
@@ -1242,7 +1260,7 @@
       ;; derive: an ontology graph is made and the document read there for its
       ;; types and relations; a pinned card then reads it as THIS graph's content
       (= "derive" ontology)
-      (when-let [oid (store/new-ontology-graph! (str (t :ui/ontology-of) " " (:name doc)))]
+      (when-let [oid (store/new-ontology-graph! (str (t :ui/ontology-of) " " (doc-title doc)))]
         (ontology-intake! oid doc nil)
         (swap! cards conj {:card :derive-next
                            :data {:id (str "derive-" oid) :doc doc :graph home :ontology oid}}))
@@ -1962,9 +1980,12 @@
   (let [rels (vals (into {} (map (fn [{:keys [relation]}] [(:id relation) relation])) accepted))
         named (into {} (map (juxt :id identity)) node-types)
         type-ids (distinct (concat (map :id node-types) (mapcat #(concat (:from %) (:to %)) rels)))
+        ;; the ordering relation is OPTIONAL (2026-11-19): the model's choice when
+        ;; it was accepted, else one between nodes of one type, else none — «the
+        ;; first relation» made «role performs process» the order, and the map
+        ;; stacked every node in one column (real-model run 2026-11-20)
         ord (or (when (some #(= ordering (:id %)) rels) ordering)
-                (:id (first (filter #(and (seq (:from %)) (= (:from %) (:to %))) rels)))
-                (:id (first rels)))]
+                (:id (first (filter #(and (seq (:from %)) (= (:from %) (:to %))) rels))))]
     {:id (str "onto-" graph) :title (or title story "") :brief (or story "")
      :node-types (vec (for [id type-ids] (merge {:id id :label (name id)} (select-keys (named id) [:label :description]))))
      :relations (vec (for [r rels] (cond-> (select-keys r [:id :label :inverse :from :to :description])
@@ -2283,13 +2304,17 @@
       [:button {:disabled (foreign?) :on-click #(resolve-card! c)} (t :chat/discard)]]]))
 
 (defmethod card-view :profile-next [_]
-  (let [n (count (:accepted @onto))]
+  (let [n (count (:accepted @onto))
+        ;; composing removes every question card: an undecided one was lost in
+        ;; silence — with it the ordering relation (real-model run 2026-11-20)
+        waiting (count (filter #(= :cq (:card %)) @cards))]
     [:div.card.card-build.card-profile-next
      [:span.card-tag (t :chat/profile-next-tag)]
      [:p (t :chat/profile-next-lead {"{n}" n})]
-     (if (pos? n)
-       [:button.primary.compose-profile {:disabled (or @busy (foreign?)) :on-click compose-profile!} (t :chat/compose-profile)]
-       [:p.muted (t :chat/onto-accept-first)])]))
+     (cond
+       (pos? waiting) [:p.muted.cq-waiting (t :chat/onto-decide-rest {"{n}" waiting})]
+       (pos? n) [:button.primary.compose-profile {:disabled (or @busy (foreign?)) :on-click compose-profile!} (t :chat/compose-profile)]
+       :else [:p.muted (t :chat/onto-accept-first)])]))
 
 (defn derive-next!
   "The derived ontology's cards are decided: back to the graph the document

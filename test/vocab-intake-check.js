@@ -165,6 +165,8 @@ const REPLY = {
                     { edges: [{ from: 'acc2', to: 'tax2', type: 'checks', label: 'проверяет', inverse: 'проверяется', why: 'так сказано' }] }]);
   const sys2 = (await page.evaluate(() => window.__calls)).map((c) => c.system).join('\n');
   check(/НЕТ в списке/.test(sys2), 'the link step may name a relation the ontology lacks');
+  check(/ни одна связь из списка эти типы не соединяет/.test(sys2) && !/вероятно (acc2|tax2)/.test(sys2),
+    'and the hint for a pair no relation fits names none — it proposed «role requires rule» (real-model run 2026-11-20)');
   check(await page.$('.card-relation-draft') !== null && /проверяет/.test(await pile()), 'a relation-draft card for «проверяет»');
   await page.click('.card-relation-draft .relation-draft-accept'); await sleep(600);
   check(/:edge-set "role" :checks "rule" \{:label "проверяет", :inverse "проверяется"\}/.test(await page.evaluate((id) => loretileLog(id) || '', oid)),
@@ -181,7 +183,7 @@ const REPLY = {
   await page.select('.card-triage .triage-which', 'derive');
   await page.click('.card-triage .triage-go'); await sleep(1500);
   const reg3 = await page.evaluate(() => localStorage.getItem('loretile-graphs'));
-  check(/:title "Онтология: процессы\.md", :ontology "ontology"/.test(reg3), 'derive: an ontology graph is made from the document');
+  check(/:title "Онтология: Как работает магазин", :ontology "ontology"/.test(reg3), 'derive: an ontology graph is made from the document, named after its heading');
   check((await page.$$('.card-type')).length >= 1 && await page.$('.card-derive-next .derive-go[disabled]') !== null,
     'its types are cards, and the next step waits until they are decided');
   await page.evaluate(() => { const b = document.querySelector('.accept-all-topics'); if (b) b.click(); }); await sleep(400);

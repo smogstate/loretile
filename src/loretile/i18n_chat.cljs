@@ -218,6 +218,7 @@
    :chat/profile-next-lead {:ru "Принято вопросов: {n}. Из принятых соберётся словарь: типы узлов и связи, каждая — ради вопроса."
                             :de "Angenommene Fragen: {n}. Aus ihnen entsteht das Vokabular: Knotentypen und Relationen, jede für eine Frage."
                             :en "Questions accepted: {n}. The vocabulary is built from them: node types and relations, each for a question."}
+   :chat/onto-decide-rest {:ru "Осталось решить вопросов: {n} — примите или отклоните их, тогда онтологию можно записать." :de "Noch offene Fragen: {n} — übernehmen oder verwerfen Sie sie, dann lässt sich die Ontologie festlegen." :en "Questions still to decide: {n} — accept or discard them, then the ontology can be written."}
    :chat/compose-profile {:ru "Записать онтологию" :de "Ontologie festlegen" :en "Write the ontology"}
    :chat/onto-accept-first {:ru "Сначала примите хотя бы один вопрос." :de "Nehmen Sie zuerst mindestens eine Frage an." :en "Accept at least one question first."}
    :chat/onto-problems {:ru "Онтология пока не сходится: " :de "Die Ontologie geht noch nicht auf: " :en "The ontology does not hold together yet: "}

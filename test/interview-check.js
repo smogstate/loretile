@@ -92,6 +92,8 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
 
   // accept three, discard the fourth: the ontology is built from the accepted ones
   for (let i = 0; i < 3; i++) { await page.click('.card-cq .cq-accept'); await sleep(200); }
+  check(await page.$('.compose-profile') === null && /Осталось решить вопросов: 1/.test(await text('.card-profile-next')),
+    'while a question waits there is nothing to write — composing dropped undecided questions in silence');
   await page.evaluate(() => [...document.querySelectorAll('.card-cq .row button')].find((b) => /Отклонить/.test(b.textContent)).click());
   await sleep(200);
   check(await page.$('.card-cq') === null, 'all four decided');
