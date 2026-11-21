@@ -3212,7 +3212,13 @@
      [:div.row
       [:a.btn.primary.cc-go {:href (str "#/learn/" (:id course))}
        [icons/icon :graph]
-       (t (if (= :not-started (:state p)) :ui/cat-start :ui/cat-continue))]]
+       ;; a passed course opens its RESULT; «continue» promised more to do
+       ;; (learning review 2026-11-20 D4)
+       (t (case (:state p) :not-started :ui/cat-start :passed :ui/cat-open-result :ui/cat-continue))]
+      (when (= :passed (:state p))
+        [:button.btn.cc-again {:on-click #(do (learn/restart-from-head! (:id course))
+                                             (goto! (str "#/learn/" (:id course))))}
+         (t :ui/cat-take-again)])]
      ;; no author's door here: the learner's hat (UX review 2026-10-02 #10);
      ;; authors reach the course from the map
      (when (seq (:runs p))
@@ -3237,7 +3243,14 @@
      [:div.cat-head
       [:h2 (t :ui/courses)]
       [:input.cat-search {:default-value @catalog-q :placeholder (t :ui/cat-search)
-                          :on-change #(reset! catalog-q (.. % -target -value))}]]
+                          :on-change #(reset! catalog-q (.. % -target -value))}]
+      ;; on a phone the assistant sits under every course card: this brings it
+      ;; up (learning review 2026-11-20 D3; hidden by CSS where it is beside)
+      ;; the panel itself (without a key it says how to get one), its field focused when there is one
+      [:button.btn.ask-guide {:on-click #(when-let [^js g (js/document.querySelector ".guide")]
+                                           (.scrollIntoView g #js {:block "start"})
+                                           (some-> (.querySelector g "textarea") .focus))}
+       [icons/icon :chat] (t :ui/cat-ask-guide)]]
      (cond
        (empty? courses)
        [:div.empty

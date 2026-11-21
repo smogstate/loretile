@@ -168,7 +168,7 @@ for (const line of logs.split('\n')) {
   // forget run A's attempts (the app holds the log in memory: reload after clearing)
   await page.evaluate(() => localStorage.removeItem('loretile-attempts'));
   await page.reload({ waitUntil: 'networkidle0' }); await sleep(600);
-  await page.click('.learn-head .restart'); await sleep(400);
+  await page.click('.learn-head .restart'); await page.waitForSelector('.restart-yes'); await page.click('.restart-yes'); await sleep(400);
   // the restart began a fresh diagnostic; walk it the same way
   let n = 0;
   while ((await stage()) === 'diagnostic' && n++ < 20) await answer(!/WHERE/.test(await liveTopic()));

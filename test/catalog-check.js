@@ -136,7 +136,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/sql.ru.edn', 'utf8')
   // in the same graph must open pre-shrunk, saying so (the whole thesis)
   await page.goto(BASE + '#/learn/sql-analyst', { waitUntil: 'networkidle0' });
   await sleep(600);
-  await page.click('.learn-head .restart');
+  await page.click('.learn-head .restart'); await page.waitForSelector('.restart-yes'); await page.click('.restart-yes');
   await sleep(700);
   const stage = () => page.$eval('.learn', (e) => e.dataset.stage).catch(() => '');
   let m = 0;

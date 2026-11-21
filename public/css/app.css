@@ -818,3 +818,13 @@ select.node-type { margin-bottom: 8px; }
 .feed-fold .chev { width: 1em; color: var(--accent); }
 .feed-fold.open { border-style: solid; }
 @media (hover: hover) { .feed-fold:hover { background: var(--accent-soft); color: var(--fg); } }
+
+/* learning review 2026-11-20 D3-D5, D7 */
+.ask-guide { display: none; }
+@media (max-width: 700px) { .ask-guide { display: inline-flex; } }   /* where the guide follows the list */
+.cc-again { margin-left: 8px; }
+.start-targets h3 { font-size: 15px; margin: 14px 0 6px; }
+.start-targets ul { margin: 0 0 10px; padding-left: 18px; }
+.start-targets li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; max-width: 560px; padding: 2px 0; }
+.start-targets .lvl { font-size: 13px; white-space: nowrap; }
+.restart-confirm { margin: 6px 0 10px; }

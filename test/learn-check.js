@@ -104,6 +104,10 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
   check(await page.$('.take-course') !== null, 'course panel offers «take the course»');
   await page.click('.take-course');
   await sleep(400);
+  // what the course covers, before it starts (learning review 2026-11-20 D5)
+  const starts = await page.$$eval('.start-targets li', (ls) => ls.map((l) => l.textContent));
+  check(starts.length === 6 && starts.some((x) => /GROUP BY/.test(x)) && starts.every((x) => /практик|новичок|профи/.test(x)),
+    `the start page lists the course's targets with their levels (${starts.length})`);
   await page.click('.learn .start');
   await sleep(300);
   check((await stage()) === 'diagnostic', 'diagnostic starts');
@@ -232,8 +236,20 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
   const log = await page.evaluate(() => localStorage.getItem('loretile-attempts'));
   check((log.match(/:ctx :final/g) || []).length === 12 && /:round 2/.test(log), 'attempt log holds both finals with rounds');
 
+  // the catalog after a pass (learning review 2026-11-20 D4)
+  await page.goto(BASE + '#/courses', { waitUntil: 'networkidle0' }); await sleep(400);
+  const passedCard = await page.$$eval('.course-card.passed', (cs) => cs.map((c) => c.textContent));
+  check(passedCard.some((x) => /Открыть результат/.test(x) && /Пройти заново/.test(x) && !/Продолжить/.test(x)),
+    'a passed course opens its result and can be taken again — not «Продолжить»');
+  await page.goto(BASE + '#/learn/sql-analyst', { waitUntil: 'networkidle0' }); await sleep(400);
+
   // sessions: start over shelves this run; the palette lists both; reopening restores the passed feed
-  await page.click('.learn-head .restart');
+  await page.waitForSelector('.learn-head .restart'); await page.click('.learn-head .restart');
+  await page.waitForSelector('.restart-confirm', { timeout: 3000 }).catch(() => {});
+  // restart asks in place, not with the browser's dialog (learning review 2026-11-20 D7)
+  check(/Начать курс заново\?/.test(await text('.restart-confirm')) && (await stage()) === 'result',
+    'restart asks in place first; nothing restarts until confirmed');
+  await page.waitForSelector('.restart-yes'); await page.click('.restart-yes');
   await sleep(400);
   check((await stage()) === 'diagnostic' && (await page.$$('.qcard')).length === 1, 'start over begins a fresh run');
   await page.keyboard.down('Control'); await page.keyboard.press('k'); await page.keyboard.up('Control');
@@ -252,7 +268,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
 
   // an ACED diagnostic (no gaps) must still have a tutor: course-scoped,
   // open at final-intro (the bug: «I still have no ai in learning»)
-  await page.click('.learn-head .restart');
+  await page.click('.learn-head .restart'); await page.waitForSelector('.restart-yes'); await page.click('.restart-yes');
   await sleep(400);
   n = 0;
   while ((await stage()) === 'diagnostic' && n++ < 20) await answer(true);
@@ -341,6 +357,16 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
       return [document.documentElement.scrollWidth, document.documentElement.clientWidth];
     });
     check(widths[0] <= widths[1], `on a phone the course page is no wider than the screen (${widths.join(' / ')})`);
+    // the assistant from the top of the catalog (learning review 2026-11-20 D3)
+    await ph.goto(BASE + '#/courses', { waitUntil: 'networkidle0' }); await sleep(400);
+    const askBox = await (await ph.$('.ask-guide'))?.boundingBox();
+    check(!!askBox && askBox.y < 200, 'on a phone «Спросить помощника» is at the top of the catalog');
+    const guideTop = () => ph.evaluate(() => document.querySelector('.guide').getBoundingClientRect().top);
+    const before = await guideTop();
+    if (askBox) { await ph.tap('.ask-guide'); await sleep(500); }
+    const after = await guideTop();
+    const vh = await ph.evaluate(() => window.innerHeight);
+    check(before > vh && after >= -1 && after < vh, `and it brings the assistant into view (top ${Math.round(before)} → ${Math.round(after)} of ${vh})`);
     await ctx.close();
   }
   await browser.close();

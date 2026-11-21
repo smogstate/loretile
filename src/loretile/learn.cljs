@@ -983,6 +983,8 @@
 
 (defonce ^:private opened (r/atom #{}))   ; [run-id from] — folded segments opened by hand
 
+(defonce ^:private confirm-restart (r/atom false))
+
 (defn- head-progress
   "Where the learner is, for the header: stage (and topic n of m) · round."
   [r]
@@ -1149,6 +1151,11 @@
        [:a.back {:href "#/courses"} "← " (t :ui/courses)]
        [:h2 (:title course)]
        [:p.muted (t :learn/intro {"{n}" (count (:targets course))})]
+       ;; what it covers, before it starts (learning review 2026-11-20 D5)
+       [:div.start-targets
+        [:h3 (t :learn/intro-targets)]
+        [:ul (for [[cid lvl] (:targets course)]
+               ^{:key cid} [:li [:span (title-of kg cid)] [:span.muted.lvl (i18n/enum-label "level" lvl)]])]]
        ;; how long it takes, before it starts: one question per topic
        [:p.muted.start-length (t :learn/intro-length {"{n}" (count (:closure (course-scope kg course)))})]
        [:button.primary.start {:on-click #(start! kg course)} (t :learn/start)]]
@@ -1168,9 +1175,18 @@
                                          :on-click toggle-marks!}
            "✦"]
           [:button.rbtn.sm.restart {:title (t :learn/restart) :aria-label (t :learn/restart)
-                                    :on-click #(when (js/confirm (t :learn/restart-confirm))
-                                                 (restart-from-head! course-id))}
+                                    :class (when @confirm-restart "on")
+                                    :on-click #(swap! confirm-restart not)}
            "↺"]]
+         ;; restart asks IN PLACE — the browser's confirm was the only native
+         ;; dialog on the learner's path (learning review 2026-11-20 D7)
+         (when @confirm-restart
+           [:div.confirm-new.restart-confirm
+            [:span (t :learn/restart-confirm)]
+            [:div.row
+             [:button.primary.restart-yes {:on-click #(do (reset! confirm-restart false) (restart-from-head! course-id))}
+              (t :learn/restart-yes)]
+             [:button.restart-no {:on-click #(reset! confirm-restart false)} (t :ui/cancel)]]])
          (when (seq retired)
            [:p.muted.retired-note (t (if newer? :learn/retired-newer :learn/retired-note)
                                      {"{list}" (str/join ", " (map #(title-of kg %) retired))})])

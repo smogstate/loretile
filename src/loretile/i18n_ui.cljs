@@ -450,6 +450,8 @@
    :learn/fold-final-passed {:ru "Итоговая проверка · {ok} из {n} ({pct}%) — сдано" :de "Abschlussprüfung · {ok} von {n} ({pct} %) — bestanden" :en "Final check · {ok} of {n} ({pct}%) — passed"}
    :learn/fold-final-failed {:ru "Итоговая проверка · {ok} из {n} ({pct}%) — не сдано" :de "Abschlussprüfung · {ok} von {n} ({pct} %) — nicht bestanden" :en "Final check · {ok} of {n} ({pct}%) — not passed"}
    :learn/fold-final-open {:ru "Итоговая проверка" :de "Abschlussprüfung" :en "Final check"}
+   :learn/intro-targets {:ru "Что в курсе" :de "Was der Kurs umfasst" :en "What the course covers"}
+   :learn/restart-yes {:ru "Начать заново" :de "Neu beginnen" :en "Start over"}
    :learn/head-diagnostic {:ru "диагностика" :de "Diagnose" :en "diagnostic"}
    :learn/head-plan {:ru "план" :de "Plan" :en "plan"}
    :learn/head-learn {:ru "тема {n} из {m}" :de "Thema {n} von {m}" :en "topic {n} of {m}"}
@@ -720,6 +722,9 @@
    :ui/error-bad-object-link {:ru "Связать можно только два разных материала одной темы." :de "Verknüpfen lassen sich nur zwei verschiedene Materialien desselben Themas." :en "Only two different materials of the same topic can be linked."}
    :ui/rel-id {:ru "Идентификатор связи (его читают экспорт и агент)" :de "Kennung der Beziehung (Export und Agent lesen sie)" :en "The relation's id (exports and the agent read it)"}
    :ui/error-relation-exists {:ru "Связь «{id}» уже есть — выберите другой идентификатор" :de "Die Beziehung „{id}“ gibt es schon — wählen Sie eine andere Kennung" :en "A relation «{id}» already exists — choose another id"}
+   :ui/cat-open-result {:ru "Открыть результат" :de "Ergebnis öffnen" :en "Open the result"}
+   :ui/cat-take-again {:ru "Пройти заново" :de "Neu beginnen" :en "Take it again"}
+   :ui/cat-ask-guide {:ru "Спросить помощника" :de "Den Helfer fragen" :en "Ask the helper"}
    :ui/palette-to-author {:ru "Карта графа (автор)" :de "Graphkarte (Autor)" :en "Graph map (author)"}
    :ui/error-unknown-route {:ru "Нет такой страницы: {route} — открыта карта." :de "Diese Seite gibt es nicht: {route} — die Karte ist geöffnet." :en "No such page: {route} — the map is open."}
    :ui/error-old-format {:ru "Графов в старом формате: {n} — их больше не открыть (формат событий сменился 2026-11-20). Они отложены, не удалены; загрузите демо заново или импортируйте граф, экспортированный в новом формате."

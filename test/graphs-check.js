@@ -170,7 +170,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   // start over: the NEW run must see the released rename
   await page.goto(BASE + '#/learn/sql-analyst', { waitUntil: 'networkidle0' });
   await sleep(700);
-  await page.click('.learn-head .restart');
+  await page.click('.learn-head .restart'); await page.waitForSelector('.restart-yes'); await page.click('.restart-yes');
   await sleep(900);
   const seen2 = [];
   for (let i = 0; i < 14; i++) {
