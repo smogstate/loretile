@@ -1496,3 +1496,16 @@ its processes and roles.'''@en .
       (let [cs (f/edge-candidates f/empty-kg [move barrel strong] 10)]
         (is (= #{"move" "t2"} (set [(:a (first cs)) (:b (first cs))])) "the strong pair first")
         (is (= #{"move" "barrel"} (set [(:a (second cs)) (:b (second cs))])) "then the weak one")))))
+
+(deftest a-course-counts-only-its-own-changes
+  ;; learning review 2026-11-20 B1: «Издать обновление (n)» counted every event after the cut
+  (let [pub (e :course-published :course {:id "gb" :title "GROUP BY" :targets [["group-by" :apprentice]]})
+        other (e :course-published :course {:id "j" :title "JOIN" :targets [["join" :apprentice]]})
+        unrelated (e :version-created :entity :concept :id "join" :change :patch :payload {:definition "Другое."})
+        material (e :version-created :entity :object :id "o-gb-1" :change :patch :payload {:text "Новый текст."})
+        prereq (e :version-created :entity :concept :id "where" :change :material :payload {:definition "WHERE — фильтр."})
+        count-at (fn [extra] (let [log (into (conj sql-events pub) extra)]
+                               (f/course-changes (f/kg log) log (:ev/id pub) {:id "gb" :targets [["group-by" :apprentice]]})))]
+    (is (= 0 (count-at [other unrelated])) "another course's publication and an edit elsewhere are not this course's changes")
+    (is (= 1 (count-at [other material])) "its material changed")
+    (is (= 2 (count-at [material prereq])) "and a prerequisite it deals counts too")))

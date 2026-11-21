@@ -115,6 +115,11 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await sleep(500);
   await G.openGraph(page, BASE, /SQL|аналитик/);
   await sleep(700);
+  // the demo publishes this course, then another one: the other course's
+  // publication is no change of THIS course (learning review 2026-11-20 B1)
+  await page.goto(BASE + '#/course/sql-analyst', { waitUntil: 'networkidle0' }); await sleep(600);
+  check(await page.$eval('.republish', (e) => e.disabled && /Обновлений нет/.test(e.textContent)).catch(() => false),
+    'a freshly loaded course offers no update — another course published after it is not its change');
   await page.goto(BASE + '#/c/' + encodeURIComponent('group-by'), { waitUntil: 'networkidle0' });
   await sleep(800);
   check(/GROUP BY/.test(await page.$eval('.panel-head h2', (e) => e.textContent)), 'author opens the topic at HEAD');

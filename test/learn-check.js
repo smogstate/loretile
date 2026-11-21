@@ -300,6 +300,25 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
     'and the verdict carries the caveat, naming the target' + (/Не проверено/.test(verdict) ? '' : ' — got ' + verdict.slice(0, 160)));
   check(/^Пока не сдано/.test(await lastText('.result-card h3')), 'and an unexamined target blocks the pass');
 
+  // --- on a phone: a tap leaves no answer looking chosen (learning review 2026-11-20 B2:
+  // :hover stuck to the first option under the finger after tapping «Начать») ---
+  {
+    const ctx = await browser.createBrowserContext();
+    const ph = await ctx.newPage();
+    await ph.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+    await ph.goto(BASE, { waitUntil: 'networkidle0' });
+    await ph.evaluate(() => { localStorage.clear(); localStorage.setItem('loretile-locale', 'ru'); for (const k of ['loretile-tour-done', 'loretile-chat-tour-done', 'loretile-learn-tour-done']) localStorage.setItem(k, '1'); });
+    await ph.reload({ waitUntil: 'networkidle0' }); await sleep(1000);
+    await ph.tap('.load-demo'); await sleep(2000);
+    await ph.goto(BASE + '#/learn/sql-analyst', { waitUntil: 'networkidle0' }); await sleep(600);
+    await ph.tap('.learn .start'); await sleep(600);
+    // what a finger leaves behind: the pointer resting on the first answer
+    const box = await (await ph.$('.qcard:not(.done) .opt')).boundingBox();
+    await ph.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await sleep(200);
+    const bgs = await ph.$$eval('.qcard:not(.done) .opt', (os) => os.map((o) => getComputedStyle(o).backgroundColor));
+    check(bgs.length >= 2 && new Set(bgs).size === 1, `on a phone no option looks chosen before a tap (${[...new Set(bgs)].join(' / ')})`);
+    await ctx.close();
+  }
   await browser.close();
   console.log(failures ? 'LEARN CHECK FAILED' : 'LEARN CHECK OK');
   process.exit(failures ? 1 : 0);

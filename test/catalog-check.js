@@ -149,6 +149,10 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/sql.ru.edn', 'utf8')
   const sibling = await text('.course-card');
   check(/Короче на \d+ тем/.test(sibling),
     'the sibling course says how much shorter it is' + (/Короче/.test(sibling) ? '' : ' — got ' + sibling.slice(0, 120)));
+  // counted right: «на 1 тему», «на 4 темы», «на 5 тем» (learning review 2026-11-20 B3)
+  const cm = sibling.match(/Короче на (\d+) (\S+?):/);
+  const ruForm = (n) => (n % 10 === 1 && n % 100 !== 11) ? 'тему' : (n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14)) ? 'темы' : 'тем';
+  check(!!cm && cm[2] === ruForm(+cm[1]), `and the count agrees with its noun («${cm ? cm[1] + ' ' + cm[2] : '—'}»)`);
   check(/Осталось \d+ из \d+/.test(sibling), 'and how much is left');
 
   // re-picking a loaded demo SWITCHES to its graph, never duplicates it
@@ -195,6 +199,11 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/sql.ru.edn', 'utf8')
   check(authorRows.some((g) => g === 'Автор'), 'assistant sittings are tagged as author work');
   await page.keyboard.press('Escape');
 
+  // an address that names no screen says so (learning review 2026-11-20 B4: #/catalog
+  // silently opened the author's map)
+  await page.goto(BASE + '#/catalog', { waitUntil: 'networkidle0' }); await sleep(400);
+  check(/Нет такой страницы: #\/catalog/.test(await page.$eval('div.error', (e) => e.textContent).catch(() => '')),
+    'an unknown address says there is no such page');
   await browser.close();
   console.log(failures ? 'CATALOG CHECK FAILED' : 'CATALOG CHECK OK');
   process.exit(failures ? 1 : 0);

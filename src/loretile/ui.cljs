@@ -64,6 +64,9 @@
               (= h "#/graphs") {:view :graphs}
               (str/starts-with? h "#/learn/") {:view :learn :id (js/decodeURIComponent (subs h 8))}
               (str/starts-with? h "#/courses") {:view :catalog}
+              ;; an address that names no screen says so rather than silently
+              ;; opening the map (learning review 2026-11-20 B4: #/catalog)
+              (not (#{"" "#" "#/"} h)) (do (reset! store/last-error {:error :unknown-route :detail h}) {:view :map})
               :else {:view :map}))
     ;; screen context for the author's assistant (design #2): the topic or
     ;; course last in view — the chat replaces that panel when it opens
@@ -2126,8 +2129,7 @@
           ;; advance, so edits made after publishing reach NOBODY, ever
           (let [head (store/graph-events @store/current)
                 cut (fold/publication-cut head id)
-                after (count (drop-while #(not= cut (:ev/id %)) head))
-                changed (max 0 (dec after))]
+                changed (fold/course-changes kg head cut course)]
             [:button.btn.republish
              {:disabled (or (zero? changed) (not (every? :ready? targets)) (some :deprecated? prereqs))
               :title (if (and (every? :ready? targets) (not-any? :deprecated? prereqs))
@@ -2329,6 +2331,7 @@
        :in-course (t :ui/error-in-course)
        :storage-full (t :ui/error-storage-full)
        :old-format (t :ui/error-old-format {"{n}" detail})
+       :unknown-route (t :ui/error-unknown-route {"{route}" detail})
        :relation-exists (t :ui/error-relation-exists {"{id}" detail})
        :invalid-schema (t :ui/error-invalid-schema {"{detail}" (pr-str detail)})
        :unknown-relation (t :ui/error-unknown-relation {"{detail}" (pr-str detail)})
@@ -3161,7 +3164,7 @@
     ;; another course of this graph. That subtraction is the whole thesis,
     ;; so the card says it before the learner starts.
     (if (pos? (:closed p))
-      (t :ui/cat-credit {"{n}" (:closed p) "{m}" (:total p) "{left}" (- (:total p) (:closed p))})
+      (tn (:closed p) [:ui/cat-credit-1 :ui/cat-credit-2 :ui/cat-credit-5] {"{m}" (:total p) "{left}" (- (:total p) (:closed p))})
       (t :ui/cat-fresh {"{m}" (:total p)}))))
 
 (defn- course-card [kg course graph]

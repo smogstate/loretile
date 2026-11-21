@@ -300,9 +300,16 @@
    :ui/cat-fresh {:ru "{m} тем вместе с пререквизитами. Диагностика вычтет то, что вы уже знаете."
                   :de "{m} Themen samt Voraussetzungen. Die Diagnose zieht ab, was Sie schon können."
                   :en "{m} topics with prerequisites. The diagnostic subtracts what you already know."}
-   :ui/cat-credit {:ru "Короче на {n} тем: вы уже доказали их в другом курсе. Осталось {left} из {m}."
-                   :de "Um {n} Themen kürzer: Sie haben sie in einem anderen Kurs bereits bewiesen. Es bleiben {left} von {m}."
-                   :en "Shorter by {n} topics: you already proved them in another course. {left} of {m} left."}
+   ;; counted: «на 1 тему», «на 4 темы», «на 5 тем» (learning review 2026-11-20 B3)
+   :ui/cat-credit-1 {:ru "Короче на {n} тему: вы уже доказали её в другом курсе. Осталось {left} из {m}."
+                     :de "Um {n} Thema kürzer: Sie haben es in einem anderen Kurs bereits bewiesen. Es bleiben {left} von {m}."
+                     :en "Shorter by {n} topic: you already proved it in another course. {left} of {m} left."}
+   :ui/cat-credit-2 {:ru "Короче на {n} темы: вы уже доказали их в другом курсе. Осталось {left} из {m}."
+                     :de "Um {n} Themen kürzer: Sie haben sie in einem anderen Kurs bereits bewiesen. Es bleiben {left} von {m}."
+                     :en "Shorter by {n} topics: you already proved them in another course. {left} of {m} left."}
+   :ui/cat-credit-5 {:ru "Короче на {n} тем: вы уже доказали их в другом курсе. Осталось {left} из {m}."
+                     :de "Um {n} Themen kürzer: Sie haben sie in einem anderen Kurs bereits bewiesen. Es bleiben {left} von {m}."
+                     :en "Shorter by {n} topics: you already proved them in another course. {left} of {m} left."}
    :ui/cat-progress {:ru "закрыто {n} из {m} тем · раунд {r}"
                      :de "{n} von {m} Themen geschlossen · Runde {r}"
                      :en "{n} of {m} topics closed · round {r}"}
@@ -699,6 +706,7 @@
    :ui/error-bad-object-link {:ru "Связать можно только два разных материала одной темы." :de "Verknüpfen lassen sich nur zwei verschiedene Materialien desselben Themas." :en "Only two different materials of the same topic can be linked."}
    :ui/rel-id {:ru "Идентификатор связи (его читают экспорт и агент)" :de "Kennung der Beziehung (Export und Agent lesen sie)" :en "The relation's id (exports and the agent read it)"}
    :ui/error-relation-exists {:ru "Связь «{id}» уже есть — выберите другой идентификатор" :de "Die Beziehung „{id}“ gibt es schon — wählen Sie eine andere Kennung" :en "A relation «{id}» already exists — choose another id"}
+   :ui/error-unknown-route {:ru "Нет такой страницы: {route} — открыта карта." :de "Diese Seite gibt es nicht: {route} — die Karte ist geöffnet." :en "No such page: {route} — the map is open."}
    :ui/error-old-format {:ru "Графов в старом формате: {n} — их больше не открыть (формат событий сменился 2026-11-20). Они отложены, не удалены; загрузите демо заново или импортируйте граф, экспортированный в новом формате."
                          :de "Graphen im alten Format: {n} — sie lassen sich nicht mehr öffnen (das Ereignisformat hat sich am 2026-11-20 geändert). Sie sind beiseitegelegt, nicht gelöscht; laden Sie die Demos neu oder importieren Sie einen Graphen im neuen Format."
                          :en "Graphs in the old format: {n} — they can no longer be opened (the event format changed on 2026-11-20). They were set aside, not deleted; reload the demos or import a graph exported in the new format."}

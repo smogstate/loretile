@@ -344,7 +344,10 @@ h2.restore { cursor: pointer; }
 .qcard .chosen { font-weight: 700; margin: 0; }
 .options { display: flex; flex-direction: column; gap: 8px; }
 .options .opt { justify-content: flex-start; text-align: left; padding: 10px 14px; font-size: 15px; }
-.options .opt:hover:not(:disabled) { background: var(--accent-soft); }
+/* only where a pointer HOVERS: on a touch screen :hover sticks to what renders
+   under the finger, and the next question's first answer looked chosen
+   (learning review 2026-11-20 B2) */
+@media (hover: hover) { .options .opt:hover:not(:disabled) { background: var(--accent-soft); } }
 .options .opt.chosen { border-color: var(--accent); font-weight: 700; }
 .options .opt:disabled { opacity: .7; cursor: default; }
 .qcard .row { display: flex; gap: 6px; }

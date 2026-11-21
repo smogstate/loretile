@@ -676,6 +676,27 @@
   [events course-id]
   (->> events (filter #(some (partial publishes? course-id) (:ops %))) last :ev/id))
 
+(declare requires-closure)
+
+(defn course-changes
+  "How many events after the course's publication `cut` change what the
+   course deals: its targets and their prerequisites (by `requires`, read
+   on the graph as it stands now), their objects and items, or a link
+   between two of them. Another course's publication or an edit elsewhere
+   is not a change of this course (learning review 2026-11-20 B1: every
+   event after the cut was counted)."
+  [kg events cut course]
+  (let [topics (requires-closure kg (map first (:targets course)))
+        of-topic (fn [id] (or (topics id)
+                              (topics (get-in kg [:objects id :concept-id]))
+                              (topics (get-in kg [:items id :primary-concept-id]))))
+        touches? (fn [[op a b c]]
+                   (case op
+                     (:node-set :node-remove) (and (not= (:id course) a) (or (of-topic a) (topics (:concept-id b)) (topics (:primary-concept-id b))))
+                     (:edge-set :edge-remove) (and (of-topic a) (of-topic c))
+                     false))]
+    (count (filter #(some touches? (:ops %)) (rest (drop-while #(not= cut (:ev/id %)) events))))))
+
 (defn- node-ids [e] (keep (fn [[op a]] (when (#{:node-set :node-remove} op) a)) (:ops e)))
 
 (defn events-at
