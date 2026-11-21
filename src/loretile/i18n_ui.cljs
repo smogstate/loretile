@@ -441,6 +441,20 @@
                  :en "First a short diagnostic over the course's {n} targets and their prerequisites. Then only what is missing, and a final check."}
    :learn/start {:ru "Начать" :de "Starten" :en "Start"}
    :learn/round {:ru "раунд {n}" :de "Runde {n}" :en "round {n}"}
+   ;; the folded feed and the header's progress (learning review 2026-11-20 D1)
+   :learn/fold-diagnostic {:ru "Диагностика · верно {ok} из {n}" :de "Diagnose · {ok} von {n} richtig" :en "Diagnostic · {ok} of {n} right"}
+   :learn/fold-plan-1 {:ru "План · {n} тема" :de "Plan · {n} Thema" :en "Plan · {n} topic"}
+   :learn/fold-plan-2 {:ru "План · {n} темы" :de "Plan · {n} Themen" :en "Plan · {n} topics"}
+   :learn/fold-plan-5 {:ru "План · {n} тем" :de "Plan · {n} Themen" :en "Plan · {n} topics"}
+   :learn/fold-topic {:ru "{title} · верно {ok} из {n}" :de "{title} · {ok} von {n} richtig" :en "{title} · {ok} of {n} right"}
+   :learn/fold-final-passed {:ru "Итоговая проверка · {ok} из {n} ({pct}%) — сдано" :de "Abschlussprüfung · {ok} von {n} ({pct} %) — bestanden" :en "Final check · {ok} of {n} ({pct}%) — passed"}
+   :learn/fold-final-failed {:ru "Итоговая проверка · {ok} из {n} ({pct}%) — не сдано" :de "Abschlussprüfung · {ok} von {n} ({pct} %) — nicht bestanden" :en "Final check · {ok} of {n} ({pct}%) — not passed"}
+   :learn/fold-final-open {:ru "Итоговая проверка" :de "Abschlussprüfung" :en "Final check"}
+   :learn/head-diagnostic {:ru "диагностика" :de "Diagnose" :en "diagnostic"}
+   :learn/head-plan {:ru "план" :de "Plan" :en "plan"}
+   :learn/head-learn {:ru "тема {n} из {m}" :de "Thema {n} von {m}" :en "topic {n} of {m}"}
+   :learn/head-final {:ru "итоговая проверка" :de "Abschlussprüfung" :en "final check"}
+   :learn/head-result {:ru "итог" :de "Ergebnis" :en "result"}
    :learn/abandon {:ru "Оставить этот прогон" :de "Diesen Durchlauf verlassen" :en "Leave this run"}
    :learn/restart {:ru "Начать заново" :de "Neu beginnen" :en "Start over"}
    :learn/restart-confirm {:ru "Начать курс заново? Текущая сессия останется в истории, ответы — в журнале."
@@ -706,6 +720,7 @@
    :ui/error-bad-object-link {:ru "Связать можно только два разных материала одной темы." :de "Verknüpfen lassen sich nur zwei verschiedene Materialien desselben Themas." :en "Only two different materials of the same topic can be linked."}
    :ui/rel-id {:ru "Идентификатор связи (его читают экспорт и агент)" :de "Kennung der Beziehung (Export und Agent lesen sie)" :en "The relation's id (exports and the agent read it)"}
    :ui/error-relation-exists {:ru "Связь «{id}» уже есть — выберите другой идентификатор" :de "Die Beziehung „{id}“ gibt es schon — wählen Sie eine andere Kennung" :en "A relation «{id}» already exists — choose another id"}
+   :ui/palette-to-author {:ru "Карта графа (автор)" :de "Graphkarte (Autor)" :en "Graph map (author)"}
    :ui/error-unknown-route {:ru "Нет такой страницы: {route} — открыта карта." :de "Diese Seite gibt es nicht: {route} — die Karte ist geöffnet." :en "No such page: {route} — the map is open."}
    :ui/error-old-format {:ru "Графов в старом формате: {n} — их больше не открыть (формат событий сменился 2026-11-20). Они отложены, не удалены; загрузите демо заново или импортируйте граф, экспортированный в новом формате."
                          :de "Graphen im alten Format: {n} — sie lassen sich nicht mehr öffnen (das Ereignisformat hat sich am 2026-11-20 geändert). Sie sind beiseitegelegt, nicht gelöscht; laden Sie die Demos neu oder importieren Sie einen Graphen im neuen Format."

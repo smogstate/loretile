@@ -329,6 +329,13 @@ h2.restore { cursor: pointer; }
 .learn-head .rbtn { margin-left: auto; flex-shrink: 0; }
 .learn-head .rbtn + .rbtn { margin-left: 0; }   /* both auto split the gap: ✦ floated mid-header */
 .learn-head .muted { white-space: nowrap; }
+.learn-head .back { min-width: 0; }
+/* the progress («итоговая проверка · раунд 1») pushed ✦ and ↺ past a phone's
+   edge and the page grew 45 px wider (D1, 2026-11-21): on narrow screens it
+   takes its own line under the title */
+@media (max-width: 600px) {
+  .learn-head { flex-wrap: wrap; row-gap: 2px; }
+  .learn-head .learn-progress { order: 3; flex-basis: 100%; font-size: 13px; } }
 .feed { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; flex: 1; }
 .feed .msg.narr { align-self: flex-start; }
 .feed .msg.ok { background: var(--ready-soft); color: var(--ready); font-style: normal; font-weight: 700; }
@@ -803,3 +810,11 @@ select.node-type { margin-bottom: 8px; }
 @media (max-width: 600px) { .peer-pills { right: 64px; bottom: 72px; } .peer-pill { width: 190px; } }
 .relation-props .rel-id { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; margin: 0 8px 0 0; padding: 4px 8px; flex: 1; min-width: 0; }
 .chat-lead .row { margin-top: 12px; }
+
+/* the folded feed (learning review 2026-11-20 D1): a finished part of a run is one line */
+.feed-seg { display: flex; flex-direction: column; gap: 10px; }
+.feed-fold { align-self: stretch; justify-content: flex-start; gap: 8px; padding: 8px 12px; border-radius: 10px;
+  background: transparent; border: 1px dashed var(--line); color: var(--muted); font-size: 14px; text-align: left; }
+.feed-fold .chev { width: 1em; color: var(--accent); }
+.feed-fold.open { border-style: solid; }
+@media (hover: hover) { .feed-fold:hover { background: var(--accent-soft); color: var(--fg); } }

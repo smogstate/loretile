@@ -933,9 +933,79 @@
 
 ;; --- the feed ---------------------------------------------------------------------------------
 
-(defn- scroll-end! []
-  ;; the composer sits AFTER the feed; scroll to it so the last card is never under it
-  (r/after-render #(when-let [el (js/document.querySelector ".learn > :last-child")] (.scrollIntoView el #js {:block "end"}))))
+;; FOLDED FEED (learning review 2026-11-20 D1: after two rounds a run was one
+;; ~15 000 px feed). The feed is drawn as SEGMENTS — the diagnostic, the
+;; plan, each topic, each final with its result — and every segment but the
+;; live one folds into a line that opens on tap. Nothing in the run changes:
+;; segments are read off the feed when it is drawn.
+
+(defn- segments
+  "The feed's segments: [{:kind :diagnostic|:plan|:topic|:final :from i :to j}]
+   (`:to` exclusive)."
+  [feed]
+  ;; a segment starts with the narration lines right before it — «Тема
+  ;; закрыта», «вопросов не осталось», «Тема 2 из 5», a round's lead — so the
+  ;; line that ends one part stays in view as the next one opens (folding it
+  ;; with the finished part hid it the moment it was written)
+  (let [lead (fn [i] (loop [j i] (if (and (pos? j) (= :narration (:kind (nth feed (dec j))))) (recur (dec j)) j)))
+        starts (keep-indexed
+                (fn [i e]
+                  (case (:kind e)
+                    (:plan :topic) [(lead i) (:kind e)]
+                    :final-intro [(lead i) :final]
+                    nil))
+                feed)
+        starts (cons [0 :diagnostic] (remove #(zero? (first %)) starts))
+        bounds (concat (map first (rest starts)) [(count feed)])]
+    (vec (keep (fn [[[from kind] to]] (when (< from to) {:kind kind :from from :to to}))
+               (map vector starts bounds)))))
+
+(defn- answered-checks [entries ctx]
+  (filter #(and (= :check (:kind %)) (= ctx (:ctx %)) (contains? % :answered)) entries))
+
+(defn- segment-line
+  "What a folded segment says in one line."
+  [kg {:keys [kind]} entries]
+  (case kind
+    :diagnostic (let [cs (answered-checks entries :diagnostic)]
+                  (t :learn/fold-diagnostic {"{ok}" (count (filter :answered cs)) "{n}" (count cs)}))
+    :plan (let [g (count (:gaps (first (filter #(= :plan (:kind %)) entries))))]
+            (tn g [:learn/fold-plan-1 :learn/fold-plan-2 :learn/fold-plan-5]))
+    :topic (let [cid (:concept (first (filter #(= :topic (:kind %)) entries)))
+                 cs (answered-checks entries :learn)]
+             (if (seq cs)
+               (t :learn/fold-topic {"{title}" (title-of kg cid) "{ok}" (count (filter :answered cs)) "{n}" (count cs)})
+               (title-of kg cid)))
+    :final (if-let [r (first (filter #(= :result (:kind %)) entries))]
+             (t (if (:passed? r) :learn/fold-final-passed :learn/fold-final-failed)
+                {"{ok}" (:ok r) "{n}" (:n r) "{pct}" (:pct r)})
+             (t :learn/fold-final-open))))
+
+(defonce ^:private opened (r/atom #{}))   ; [run-id from] — folded segments opened by hand
+
+(defn- head-progress
+  "Where the learner is, for the header: stage (and topic n of m) · round."
+  [r]
+  (str (case (:stage r)
+         :diagnostic (t :learn/head-diagnostic)
+         :plan (t :learn/head-plan)
+         :learn (t :learn/head-learn {"{n}" (min (inc (:learn-at r 0)) (count (:gaps r))) "{m}" (count (:gaps r))})
+         (:final-intro :final) (t :learn/head-final)
+         :result (t :learn/head-result)
+         "")
+       " · " (t :learn/round {"{n}" (:round r)})))
+
+(defonce ^:private scrolled-at (atom nil))
+
+(defn- scroll-end!
+  "The composer sits AFTER the feed; scroll to it so the last card is never
+   under it — only when the feed GREW (or the tutor started thinking), never
+   on any redraw: opening a folded part of the run jumped straight back to
+   the end, and a tap landed on whatever slid under it (D1, 2026-11-21)."
+  [mark]
+  (when (not= mark @scrolled-at)
+    (reset! scrolled-at mark)
+    (r/after-render #(when-let [el (js/document.querySelector ".learn > :last-child")] (.scrollIntoView el #js {:block "end"})))))
 
 (defn- tutor-open?
   "The tutor and the scratchpad share one rule: gone in the two exams and
@@ -1085,11 +1155,11 @@
       :else
       (let [feed (:feed @run)
             last-live (last (keep-indexed (fn [i e] (when (#{:check :plan :final-intro :result :ready :pause} (:kind e)) i)) feed))]
-        (scroll-end!)
+        (scroll-end! [(:id @run) (count feed) (:busy? @run)])
         [:div.learn {:data-stage (name (:stage @run))}
          [:div.learn-head
           [:a.back {:href "#/courses"} "← " (:title course)]
-          [:span.muted (t :learn/round {"{n}" (:round @run)})]
+          [:span.muted.learn-progress (head-progress @run)]
           ;; restart from HEAD: reusing the rendered course re-pinned the new
           ;; run to the OLD cut, so «start over» could never reach a newer
           ;; publication (found in review, 2026-09-11)
@@ -1107,8 +1177,25 @@
          [:div.feed
           ;; keyed by RUN and index: an index alone reused a card's state
           ;; (typed code, an answer) across a restart or a reopened run
-          (for [[i e] (map-indexed vector feed)]
-            ^{:key (str (:id @run) "/" i)} [entry-view kg course e (= i last-live)])
+          ;; @opened deref'd HERE, never inside the lazy `for` below (CLAUDE.md
+          ;; gotcha: the render would not re-run, and a tap opened nothing)
+          (let [segs (segments feed)
+                last-seg (peek segs)
+                op @opened]
+            (for [{:keys [from to] :as sg} segs
+                  :let [k [(:id @run) from]
+                        entries (subvec feed from to)
+                        open? (or (= sg last-seg) (contains? op k))]]
+              ^{:key (str (:id @run) "/seg/" from)}
+              [:div.feed-seg {:class (name (:kind sg))}
+               (when (not= sg last-seg)
+                 [:button.feed-fold {:class (when open? "open") :aria-expanded (boolean open?)
+                                     :on-click #(swap! opened (fn [o] (if (contains? o k) (disj o k) (conj o k))))}
+                  [:span.chev (if open? "▾" "▸")] [:span (segment-line kg sg entries)]])
+               (when open?
+                 (for [[j e] (map-indexed vector entries)
+                       :let [i (+ from j)]]
+                   ^{:key (str (:id @run) "/" i)} [entry-view kg course e (= i last-live)]))]))
           (when (:busy? @run) [:div.msg.msg-sys (t :learn/tutor-thinking)])
           [:div.feed-end]]
          ;; keyed by course and topic: its code is saved under the course it

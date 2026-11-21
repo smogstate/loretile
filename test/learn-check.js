@@ -120,15 +120,24 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
   check(!/уже показали/.test(planText), 'the plan no longer claims the rest was demonstrated');
   check(/Пропущено, вопросов пока нет/.test(planText) && /Таблицы/.test(planText),
     'and names the topic nobody could test' + (/Пропущено/.test(planText) ? '' : ' — got ' + planText.slice(0, 160)));
+  // the finished diagnostic folds into one line (learning review 2026-11-20 D1);
+  // its answered cards are still there, greyed, a tap away
+  const diagLine = await text('.feed-seg.diagnostic .feed-fold');
+  check(/Диагностика · верно \d+ из \d+/.test(diagLine), 'the finished diagnostic folds into one line: ' + diagLine);
+  await page.click('.feed-seg.diagnostic .feed-fold'); await sleep(200);
   const doneCards = (await page.$$('.qcard.done')).length;
-  check(doneCards >= 8, 'answered cards stay in the feed, greyed (' + doneCards + ')');
+  check(doneCards >= 8, 'and opens on tap: its answered cards stay in the feed, greyed (' + doneCards + ')');
+  // opening it does not throw the page back to the end (every redraw scrolled there)
+  const inView = await page.$eval('.feed-seg.diagnostic .feed-fold', (b) => { const r = b.getBoundingClientRect(); return r.bottom > 0 && r.top < window.innerHeight; });
+  check(inView, 'and the opened part stays in view — the page does not jump back to the end');
+  await page.click('.feed-seg.diagnostic .feed-fold'); await sleep(200);
   const planItems = await page.$$eval('.plan-card ol.plan li', (els) => els.map((e) => e.textContent));
   check(planItems.length > 0 && !planItems.some((p) => /GROUP BY|HAVING|Агрегатные/.test(p)), 'plan holds only the gaps');
   const idx = (re) => planItems.findIndex((p) => re.test(p));
   check(idx(/Таблицы/) === -1 && idx(/SELECT/) < idx(/WHERE/) && idx(/Ключи/) < idx(/JOIN/), 'gaps in prerequisite order (untested topics skipped)');
 
   await clickLive('.plan-card button.primary');
-  check((await stage()) === 'learn' && (await page.$$('.topic-card')).length === 1, 'learning starts: topic card in the feed');
+  check((await stage()) === 'learn' && (await page.$$('.feed-seg.topic')).length === 1, 'learning starts: topic card in the feed');
   check((await page.$$('.topic-card .lo')).length >= 1, 'the topic card shows its learning objects');
   check(await page.$('.check-me') !== null, 'the learner asks to be checked; the question is not forced on them');
   check(await page.$('.learn .composer textarea') !== null, 'the tutor is open on the material');
@@ -169,7 +178,7 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
   // ONE question and its answer was just shown: the old loop re-asked it and
   // closed the topic on it. Now the topic says so and the loop moves on.
   await readyUp();
-  check(!(await page.$(LIVE)) && /не осталось вопросов/.test(await feedText()) && (await page.$$('.topic-card')).length === 2,
+  check(!(await page.$(LIVE)) && /не осталось вопросов/.test(await feedText()) && (await page.$$('.feed-seg.topic')).length === 2,
     'a one-question topic whose answer was shown is not re-asked; it stays a gap and the next topic opens');
   // a CORRECT answer keeps the rhythm: never a needless tap. Either the next
   // question is already live, or the topic closed — never a pause card.
@@ -178,9 +187,10 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
     'a correct answer never stops at a pause card');
   if (!(await page.$(LIVE))) await readyUp();
   if (await page.$(LIVE)) await answer(true);
-  check(/закрыта/.test(await feedText()) && (await page.$$('.topic-card')).length === 3, 'two in a row (two different questions) close the topic, the next topic card appears');
+  check(/закрыта/.test(await feedText()) && (await page.$$('.feed-seg.topic')).length === 3, 'two in a row (two different questions) close the topic, the next topic card appears');
   n = 0;
-  const feedLen = () => page.$$eval('.feed > *', (els) => els.length);
+  // grows with every entry, folded or not: segments, then the live one's entries
+  const feedLen = () => page.$$eval('.feed .feed-seg', (els) => els.length * 1000 + (els.length ? els[els.length - 1].children.length : 0));
   while ((await stage()) === 'learn' && n++ < 60) {
     const before = await feedLen();
     if (!(await page.$(LIVE))) { if (!(await readyUp())) break; }
@@ -228,6 +238,10 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
   check((await stage()) === 'diagnostic' && (await page.$$('.qcard')).length === 1, 'start over begins a fresh run');
   await page.keyboard.down('Control'); await page.keyboard.press('k'); await page.keyboard.up('Control');
   await sleep(200);
+  // the learner's palette (learning review 2026-11-20 D2): courses and runs, no author commands
+  const all = await page.$$eval('.cmd-list li', (els) => els.map((e) => e.textContent));
+  check(!all.some((r) => /Новая тема|Новая связь|Новый граф|Новая онтология|Отменить/.test(r)) && all.some((r) => /SQL для аналитиков/.test(r)),
+    'inside a course the palette is the learner\'s: courses and runs, no author commands');
   await page.type('.cmd-input', 'SQL');
   await sleep(200);
   const rows = await page.$$eval('.cmd-list li', (els) => els.map((e) => e.textContent));
@@ -257,10 +271,12 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
   check((await stage()) === 'result' && await page.$('.learn .composer textarea') !== null,
     'tutor stays open on the result screen');
 
-  // progress survives a reload
+  // progress survives a reload: the same parts of the run come back (folded)
+  const segsBefore = await page.$$eval('.feed-seg', (els) => els.map((e) => e.className + '|' + (e.querySelector('.feed-fold')?.textContent || '')));
   await page.reload({ waitUntil: 'networkidle0' });
   await sleep(500);
-  check((await stage()) === 'result' && (await page.$$('.qcard')).length > 10, 'the run survives a reload');
+  const segsAfter = await page.$$eval('.feed-seg', (els) => els.map((e) => e.className + '|' + (e.querySelector('.feed-fold')?.textContent || '')));
+  check((await stage()) === 'result' && segsBefore.length >= 2 && JSON.stringify(segsAfter) === JSON.stringify(segsBefore), 'the run survives a reload' + (JSON.stringify(segsAfter) === JSON.stringify(segsBefore) ? '' : ' — ' + JSON.stringify([segsBefore, segsAfter])));
 
   // --- HONESTY: a final cannot quietly skip a target it has no question for --
   // Publishing such a course is now blocked at the door, so the case that
@@ -317,6 +333,14 @@ for (const line of fs.readFileSync(__dirname + '/../kg/demo/log.edn', 'utf8').sp
     await ph.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await sleep(200);
     const bgs = await ph.$$eval('.qcard:not(.done) .opt', (os) => os.map((o) => getComputedStyle(o).backgroundColor));
     check(bgs.length >= 2 && new Set(bgs).size === 1, `on a phone no option looks chosen before a tap (${[...new Set(bgs)].join(' / ')})`);
+    // the header's progress never pushes the page wider than the phone (D1, 2026-11-21)
+    // measured with the LONGEST progress the header shows (the final's), on the course's long title
+    const widths = await ph.evaluate(() => {
+      const pr = document.querySelector('.learn-head .learn-progress');
+      if (pr) pr.textContent = 'итоговая проверка · раунд 12';
+      return [document.documentElement.scrollWidth, document.documentElement.clientWidth];
+    });
+    check(widths[0] <= widths[1], `on a phone the course page is no wider than the screen (${widths.join(' / ')})`);
     await ctx.close();
   }
   await browser.close();

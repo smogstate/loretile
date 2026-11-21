@@ -2207,7 +2207,34 @@
               (t :ui/create)]
              [:button {:on-click #(reset! new-graph-form nil)} (t :ui/cancel)]]]]))))))
 
+(defn- learner-palette
+  "On the learner's screens the palette is the learner's (learning review
+   2026-11-20 D2: it led with new topic, new graph, undo…): every course on
+   this device, past runs, and the way back to the author's map."
+  [kg]
+  (concat
+   [{:label (t :ui/courses) :icon :notes :run #(goto! "#/courses")}]
+   (for [g (store/graph-kgs) [cid c] (get-in g [:kg :courses])]
+     {:label (:title c) :icon :notes :hint (t :ui/course-word)
+      :run #(goto! (str "#/learn/" (js/encodeURIComponent cid)))})
+   (for [s (reverse (learn/past-runs kg))]
+     {:label (str (:title s) " · " (t :learn/round {"{n}" (:round s)}))
+      :icon :notes
+      :group (t :ui/hat-learn)
+      :hint (str (t :learn/session-word) " · "
+                 (t (case (:status s) :passed :learn/session-status-passed :failed :learn/session-status-failed :learn/session-status-open))
+                 (when (:current? s) (str " · " (t :ui/session-now))))
+      :run #(do (learn/open-run! s) (goto! (str "#/learn/" (:course s))))})
+   [{:label (t :ui/palette-to-author) :icon :graph :run #(goto! "#/")}]))
+
+(declare author-palette)
+
 (defn palette-actions [kg]
+  (if (#{:catalog :learn} (:view @route))
+    (learner-palette kg)
+    (author-palette kg)))
+
+(defn- author-palette [kg]
   (concat
    [{:label (t :ui/map) :icon :graph :run #(goto! "#/")}
     {:label (t :ui/courses) :icon :notes :run #(goto! "#/courses")}
