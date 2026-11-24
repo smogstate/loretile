@@ -5,6 +5,8 @@
 // Loretile rule lives here: `apply` writes row changes, everything else reads.
 // Messages: {id, op, ...args} → {id, ok: result} | {id, error}.
 import sqlite3InitModule from './sqlite/index.mjs';
+// the fold and the guard, compiled from ClojureScript (shadow-cljs :graphfold)
+import { judge, changes as changesOf } from './graphfold/graphfold.js';
 
 const DB = '/loretile.sqlite3';
 let sqlite3, pool, db;
@@ -246,7 +248,25 @@ function vectorSearch({ graph, model, vec, limit }) {
   return scored.sort((a, b) => b[1] - a[1]).slice(0, limit || 20).map(([id, sc, i]) => [id, ...vcache.info[i], sc]);
 }
 
-const ops = { open, apply, head, clear, structure, node, search, changesSince, dump, dumpJson, pending, putVectors, vectorsFor,
+// THE GATE for the fold in the Worker (wiki/Graph-Store.md § Next, step 1):
+// a log (EDN events) judged and projected HERE, against SQLite, into a scratch
+// graph — the verdicts and the rows come back for the page to hold against its
+// own guard and fold. Nothing of the scratch graph stays.
+function verify({ events }) {
+  const graph = '::verify';
+  clear({ graph });
+  const verdicts = [];
+  try {
+    events.forEach((ev, i) => {
+      const v = judge(db, graph, ev);
+      verdicts.push(v);
+      if (v == null) apply({ graph, changes: [changesOf(db, graph, ev, i + 1)], fold: 'verify' });
+    });
+    return { verdicts, dump: dump({ graph }) };
+  } finally { clear({ graph }); }
+}
+
+const ops = { verify, open, apply, head, clear, structure, node, search, changesSince, dump, dumpJson, pending, putVectors, vectorsFor,
   // the handover to another tab: release the access handles now
   pause: () => { pool && pool.pauseVfs(); return true; } };
 

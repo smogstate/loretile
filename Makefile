@@ -33,6 +33,8 @@ engines: install
 	@mkdir -p public/js/pglite public/js/pyodide public/js/sqlite
 	@cp $(PGLITE)/*.js $(PGLITE)/*.wasm $(PGLITE)/pglite.data public/js/pglite/
 	@cp $(SQLITE)/index.mjs $(SQLITE)/sqlite3.wasm public/js/sqlite/
+	@# the fold and the guard for the graph-store Worker (graphstore.js imports it)
+	@npx shadow-cljs release graphfold >/dev/null
 	@cp $(PYODIDE)/pyodide.mjs $(PYODIDE)/pyodide.asm.mjs $(PYODIDE)/pyodide.asm.wasm \
 	    $(PYODIDE)/python_stdlib.zip $(PYODIDE)/pyodide-lock.json public/js/pyodide/
 
@@ -90,7 +92,7 @@ define app-files
 	@cp public/css/app.css public/css/driver.css $(1)/css/
 	@cp public/js/main.js public/js/pdf.min.mjs public/js/pdf.worker.min.mjs \
 	    public/js/pyrunner.js public/js/pgrunner.js public/js/graphstore.js $(1)/js/
-	@cp -R public/js/pglite public/js/pyodide public/js/sqlite $(1)/js/
+	@cp -R public/js/pglite public/js/pyodide public/js/sqlite public/js/graphfold $(1)/js/
 endef
 
 dist: release
@@ -173,7 +175,7 @@ deploy: clean-tree test smoke deploy-landing
 	$(call put,public/js/pyrunner.js,app/js/pyrunner.js,text/javascript; charset=utf-8,no-cache) && \
 	$(call put,public/js/pgrunner.js,app/js/pgrunner.js,text/javascript; charset=utf-8,no-cache) && \
 	$(call put,public/js/graphstore.js,app/js/graphstore.js,text/javascript; charset=utf-8,no-cache) && \
-	for f in public/js/pglite/* public/js/pyodide/* public/js/sqlite/*; do \
+	for f in public/js/pglite/* public/js/pyodide/* public/js/sqlite/* public/js/graphfold/*; do \
 		case $$f in *.wasm) ct=application/wasm;; *.js|*.mjs) ct="text/javascript; charset=utf-8";; \
 			*.json) ct=application/json;; *.zip) ct=application/zip;; *) ct=application/octet-stream;; esac; \
 		gzip -9c $$f | curl -sf -X PUT -H "Authorization: Bearer $$IAM_TOKEN" \

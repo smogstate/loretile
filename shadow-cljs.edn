@@ -18,6 +18,11 @@
   :test {:target :node-test
          :output-to "out/test.js"
          :ns-regexp "-test$"}
+  ;; the fold and the guard inside the graph-store Worker (wiki/Graph-Store.md):
+  ;; an ES module public/js/graphstore.js imports beside SQLite
+  :graphfold {:target :esm
+              :output-dir "public/js/graphfold"
+              :modules {:graphfold {:exports {judge loretile.graph-worker/judge changes loretile.graph-worker/changes}}}}
   ;; the MCP server for coding agents (wiki/Profiles.md): node out/mcp.js log.edn
   :mcp {:target :node-script
         :main loretile.mcp/main

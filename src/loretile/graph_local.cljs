@@ -303,6 +303,24 @@
              :lastSync (fn [] (clj->js @last-sync))
              :current (fn [] (current? @store/current @store/events))
              :equivalence (fn [gid] (p/let [r (equivalence (or gid @store/current))] (clj->js r)))
+             ;; the gate for the fold in the Worker: the same log judged and projected
+             ;; there (against SQLite) and here (in memory) — verdicts and graphs equal
+             :verifyInWorker (fn [log-edn]
+                               (let [evs (vec (cljs.reader/read-string log-edn))
+                                     [expected k] (reduce (fn [[vs k] e] (let [v (fold/guard k e)]
+                                                                            [(conj vs (some-> v pr-str)) (if v k (fold/apply-event k e))]))
+                                                          [[] fold/empty-kg] evs)
+                                     norm (fn [kg] (into {} (remove (fn [[kk v]] (or (nil? v) (#{::fold/eidx ::fold/nbr} kk)))) kg))]
+                                 (p/let [^js r (call :verify {:events (clj->js (map pr-str evs))})]
+                                   (let [got (vec (map #(when (some? %) %) (js->clj (.-verdicts r))))
+                                         d (.-dump r)
+                                         rows {:nodes (js->clj (.-nodes d)) :edges (js->clj (.-edges d)) :discarded (js->clj (.-discarded d))
+                                               :heads (some-> (.-heads d) cljs.reader/read-string)}
+                                         same-graph (= (norm (gs/rows->kg rows)) (norm k))]
+                                     #js {:verdictsEqual (= expected got) :graphEqual same-graph
+                                          :refused (count (remove nil? expected))
+                                          :firstDiff (some (fn [[i a b]] (when (not= a b) (str i ": page " a " · worker " b)))
+                                                           (map vector (range) expected got))}))))
              ;; the graph the app renders (built from rows at boot, or folded) = the fold of its log
              :appGraphIsFold (fn [] (let [norm (fn [kg] (into {} (remove (fn [[k v]] (or (nil? v) (#{::fold/eidx ::fold/nbr} k)))) kg))]
                                       (= (norm (store/kg)) (norm (fold/kg @store/events)))))
