@@ -96,29 +96,3 @@
             (catch Exception e (log "embedding failed, retried later:" (ex-message e))))
        (Thread/sleep 5000)
        (recur)))))
-
-;; --- search by meaning ---------------------------------------------------------------
-
-(defn nearest
-  "The ids of the `k` vectors closest to `q` by cosine, best first.
-   ponytail: decodes every vector of the graph per query (the Worker keeps
-   them in memory, ≈100 ms at 40k); cache per [graph model head] when slow."
-  [id-vecs q k]
-  (let [q (float-array q)
-        norm (fn [^floats v] (Math/sqrt (areduce v i s 0.0 (+ s (* (aget v i) (aget v i))))))
-        qn (max (norm q) 1e-9)]
-    (->> id-vecs
-         (map (fn [[id ^floats v]]
-                [id (/ (areduce v i s 0.0 (+ s (* (aget v i) (aget q i)))) (* qn (max (norm v) 1e-9)))]))
-         (sort-by (comp - second))
-         (take k)
-         (map first))))
-
-(defn rrf
-  "Reciprocal rank fusion of ranked id lists → [[id score]] best first."
-  [lists limit]
-  (->> lists
-       (mapcat (fn [ids] (map-indexed (fn [i id] {id (/ 1.0 (+ 61 i))}) ids)))
-       (apply merge-with +)
-       (sort-by (comp - val))
-       (take limit)))

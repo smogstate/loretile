@@ -264,11 +264,18 @@
        (map #(str "\"" (str/replace % "\"" "") "\"*"))
        (str/join " OR ")))
 
-(defn search
+(defn phrase-query
+  "The text as written → an FTS5 phrase: its words, adjacent, in order."
+  [text]
+  (let [ws (filter seq (str/split (str/lower-case (or text "")) #"[^\p{L}\p{N}_]+"))]
+    (when (seq ws) (str "\"" (str/join " " (map #(str/replace % "\"" "") ws)) "\""))))
+
+(defn- fts
   "[[id class title short parent score]] best first, by FTS5 bm25 — the parent
-   names a material hit's topic (as the browser's store answers)."
-  [db graph text limit]
-  (let [q (fts-query text)]
+   names a material hit's topic (as the browser's store answers). `verbatim?`:
+   the text as a phrase, not any of its words."
+  [db graph text limit & [verbatim?]]
+  (let [q (if verbatim? (phrase-query text) (fts-query text))]
     (if (str/blank? q)
       []
       (locked db (rows db "SELECT n.id, n.class, n.title, n.short, n.parent, -bm25(nodes_fts) AS score
@@ -317,6 +324,50 @@
   "[[id class title short parent]] for these ids (current rows)."
   [db graph ids]
   (locked db (vec (keep #(first (rows db "SELECT id, class, title, short, parent FROM nodes WHERE graph=? AND id=? AND to_seq IS NULL" graph %)) ids))))
+
+(defn- nearest
+  "The ids of the `k` vectors closest to `q` by cosine, best first.
+   ponytail: decodes every vector of the graph per query (the Worker keeps
+   them in memory, ≈100 ms at 40k); cache per [graph model head] when slow."
+  [id-vecs q k]
+  (let [q (float-array q)
+        norm (fn [^floats v] (Math/sqrt (areduce v i s 0.0 (+ s (* (aget v i) (aget v i))))))
+        qn (max (norm q) 1e-9)]
+    (->> id-vecs
+         (map (fn [[id ^floats v]]
+                [id (/ (areduce v i s 0.0 (+ s (* (aget v i) (aget q i)))) (* qn (max (norm v) 1e-9)))]))
+         (sort-by (comp - second))
+         (take k)
+         (map first))))
+
+(defn- rrf
+  "Reciprocal rank fusion of ranked id lists → [[id score]] best first."
+  [lists limit]
+  (->> lists
+       (mapcat (fn [ids] (map-indexed (fn [i id] {id (/ 1.0 (+ 61 i))}) ids)))
+       (apply merge-with +)
+       (sort-by (comp - val))
+       (take limit)))
+
+(defn search
+  "The store's search — no network, no model call (wiki/Graph-Store.md): the
+   caller brings the query's vector. [[id class title short parent score]]
+   best first. `mode`: \"verbatim\" — the text as written (an FTS phrase);
+   \"semantic\" — cosine of `vec` against the vectors `model` made (nothing
+   without `vec`); \"hybrid\" (default) — any of its words fused with the
+   semantic hits by reciprocal rank fusion, words only without `vec`."
+  ;; `qv`, never `vec`: a local named vec shadowed clojure.core/vec below
+  [db graph {:keys [text model mode limit] qv :vec :or {mode "hybrid" limit 20}}]
+  (let [rows (fn [scored] (let [info (into {} (map (juxt first identity)) (rows-of db graph (map first scored)))]
+                            (vec (for [[id score] scored :let [r (info id)] :when r] (conj r score)))))
+        near #(nearest (vectors db graph model) qv (* 2 limit))]
+    (case mode
+      "verbatim" (vec (take limit (fts db graph text limit true)))
+      "semantic" (if (and qv model) (rows (map-indexed (fn [i id] [id (/ 1.0 (+ 61 i))]) (take limit (near)))) [])
+      (let [words (fts db graph text (* 2 limit))]
+        (if (and qv model)
+          (rows (rrf [(map first words) (near)] limit))
+          (vec (take limit words)))))))
 
 (defn spent [db day] (locked db (or (value db "SELECT tokens FROM spend WHERE day=?" day) 0)))
 (defn spend! [db day n]

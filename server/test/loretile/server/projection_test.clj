@@ -62,7 +62,10 @@
         (is (= (inc (count evs)) (:seq (proj/head db g))))
         (is (= (comparable (fold/kg (conj evs fine))) (comparable (gs/rows->kg (proj/dump db g)))))
         (is (= 2 (count (:nodes (proj/changes-since db g (count evs))))) "the new row and the one it closed")
-        (is (seq (proj/search db g "новое определение" 5)))))))
+        (is (seq (proj/search db g {:text "новое определение" :limit 5})) "hybrid without a vector: words")
+        (is (seq (proj/search db g {:text "новое определение" :mode "verbatim" :limit 5})) "verbatim: the phrase")
+        (is (empty? (proj/search db g {:text "определение новое" :mode "verbatim" :limit 5})) "verbatim: words out of order are not the phrase")
+        (is (empty? (proj/search db g {:text "новое определение" :mode "semantic" :limit 5})) "semantic without a vector: nothing")))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'loretile.server.projection-test)]

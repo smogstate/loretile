@@ -86,8 +86,11 @@
     :run (fn [kg {:keys [type stale]}] (gt/list-nodes kg (some-> type not-empty keyword) (true? stale)))}
    {:name "search-nodes"
     :description "Find nodes by words in their title, definition and material (word endings are loosely matched; use the graph's own language — see describe-ontology); returns id, title, type, the start of the definition, and the matching words when only the material matched. Nothing found: try other words, or list-nodes to read every title."
-    :inputSchema {:type "object" :properties {:query {:type "string"}} :required ["query"]}
-    :run (fn [kg {:keys [query]}] (gt/search-nodes kg nil query))}
+    :inputSchema {:type "object" :properties {:query {:type "string"}
+                                              :mode {:type "string" :enum ["hybrid" "semantic" "verbatim"]
+                                                     :description "verbatim: the query as written, a phrase; hybrid (default) and semantic search by words here — this server keeps no vectors"}}
+                  :required ["query"]}
+    :run (fn [kg {:keys [query mode]}] (gt/search-nodes kg nil query nil mode))}
    {:name "open-node"
     :description "One node by id: definition, every relation in both directions (in the ontology's words; a link the source does not state reads «(inferred: why)»), material in full (lists, thresholds, steps), sources, whether it is STALE (its source changed), the competency questions it leaves unanswered."
     :inputSchema {:type "object" :properties {:id {:type "string"}} :required ["id"]}

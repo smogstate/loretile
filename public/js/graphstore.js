@@ -137,14 +137,38 @@ function node({ graph, id }) {
 const ftsQuery = (text) => (text || '').toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((w) => w.length > 1)
   .map((w) => `"${w.replace(/"/g, '')}"*`).join(' OR ');
 
-function search({ graph, text, limit, classes }) {
-  const q = ftsQuery(text);
+// the text as written: its words adjacent and in order (an FTS5 phrase)
+const phraseQuery = (text) => { const ws = (text || '').toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+  return ws.length ? `"${ws.map((w) => w.replace(/"/g, '')).join(' ')}"` : ''; };
+
+// words: any of them; verbatim: the phrase as written
+function fts({ graph, text, limit, classes, verbatim }) {
+  const q = verbatim ? phraseQuery(text) : ftsQuery(text);
   if (!q) return [];
   const cls = classes && classes.length ? ` AND n.class IN (${classes.map(() => '?').join(',')})` : '';
   return all(`SELECT n.id, n.class, n.title, n.short, n.parent, -bm25(nodes_fts) AS score
               FROM nodes_fts f JOIN nodes n ON n.rowid = f.rowid
               WHERE nodes_fts MATCH ? AND n.graph=? AND n.to_seq IS NULL${cls}
               ORDER BY bm25(nodes_fts) LIMIT ?`, [q, graph, ...(classes || []), limit || 20]);
+}
+
+// THE STORE'S SEARCH — no network, no model call (wiki/Graph-Store.md): the
+// caller brings the query's vector. [[id class title short parent score]].
+// verbatim: the text as written (an FTS phrase); semantic: cosine of `vec`
+// against the vectors `model` made (nothing without one); hybrid (default):
+// any of its words fused with the semantic hits by reciprocal rank fusion,
+// words only without a vector.
+function search({ graph, text, limit = 20, classes, mode = 'hybrid', vec, model }) {
+  if (mode === 'verbatim') return fts({ graph, text, limit, classes, verbatim: true });
+  const near = (k) => (vec && model ? vectorSearch({ graph, model, vec, limit: k }) : []);
+  if (mode === 'semantic') return near(limit);
+  const words = fts({ graph, text, limit: 2 * limit, classes });
+  const meaning = near(2 * limit);
+  if (!meaning.length) return words.slice(0, limit);
+  const fused = new Map();
+  for (const list of [words, meaning])
+    list.forEach((row, i) => { const f = fused.get(row[0]) || { row, s: 0 }; f.s += 1 / (61 + i); fused.set(row[0], f); });
+  return [...fused.values()].sort((a, b) => b.s - a.s).slice(0, limit).map(({ row, s }) => [...row.slice(0, 5), s]);
 }
 
 function changesSince({ graph, seq }) {
@@ -184,6 +208,17 @@ function pending({ graph, model, limit }) {
               LIMIT ?`, [graph, model, limit || 100]);
 }
 
+// the vectors these texts already have (by text hash) — the intake reuses them
+function vectorsFor({ model, hashes }) {
+  const out = [];
+  for (let i = 0; i < hashes.length; i += 500) {
+    const part = hashes.slice(i, i + 500);
+    for (const [h, b] of all(`SELECT hash, vec FROM vectors WHERE model=? AND hash IN (${part.map(() => '?').join(',')})`, [model, ...part]))
+      out.push([h, Array.from(new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4))]);
+  }
+  return out;
+}
+
 function putVectors({ model, vecs }) {
   const s = db.prepare(`INSERT OR REPLACE INTO vectors VALUES (?,?,?)`);
   db.transaction(() => { for (const [hash, v] of vecs) s.bind([hash, model, new Uint8Array(new Float32Array(v).buffer)]).stepReset(); });
@@ -195,21 +230,23 @@ function putVectors({ model, vecs }) {
 let vcache = null;
 function vectorSearch({ graph, model, vec, limit }) {
   if (!vcache || vcache.graph !== graph || vcache.model !== model || vcache.stale) {
-    const rows = all(`SELECT n.id, v.vec FROM nodes n JOIN vectors v ON v.hash = n.text_hash AND v.model = ?
+    const rows = all(`SELECT n.id, v.vec, n.class, n.title, n.short, n.parent FROM nodes n JOIN vectors v ON v.hash = n.text_hash AND v.model = ?
                       WHERE n.graph=? AND n.to_seq IS NULL`, [model, graph]);
-    vcache = { graph, model, ids: rows.map((r) => r[0]), vecs: rows.map((r) => new Float32Array(r[1].buffer, r[1].byteOffset, r[1].byteLength / 4)) };
+    vcache = { graph, model, ids: rows.map((r) => r[0]), info: rows.map((r) => [r[2], r[3], r[4], r[5]]),
+               vecs: rows.map((r) => new Float32Array(r[1].buffer, r[1].byteOffset, r[1].byteLength / 4)) };
   }
   const q = Float32Array.from(vec);
   let qn = 0; for (let i = 0; i < q.length; i++) qn += q[i] * q[i];
   qn = Math.sqrt(qn) || 1;
   const scored = vcache.vecs.map((v, i) => {
     let s = 0, n = 0; for (let d = 0; d < v.length; d++) { s += v[d] * q[d]; n += v[d] * v[d]; }
-    return [vcache.ids[i], s / (Math.sqrt(n) * qn || 1)];
+    return [vcache.ids[i], s / (Math.sqrt(n) * qn || 1), i];
   });
-  return scored.sort((a, b) => b[1] - a[1]).slice(0, limit || 20);
+  // shaped like `search`: [id class title short parent score]
+  return scored.sort((a, b) => b[1] - a[1]).slice(0, limit || 20).map(([id, sc, i]) => [id, ...vcache.info[i], sc]);
 }
 
-const ops = { open, apply, head, clear, structure, node, search, changesSince, dump, dumpJson, pending, putVectors, vectorSearch,
+const ops = { open, apply, head, clear, structure, node, search, changesSince, dump, dumpJson, pending, putVectors, vectorsFor,
   // the handover to another tab: release the access handles now
   pause: () => { pool && pool.pauseVfs(); return true; } };
 

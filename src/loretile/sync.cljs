@@ -83,10 +83,12 @@
   (api-get ""))
 
 (defn search
-  "The server's search over graph `gid` (FTS, fused with its vectors when it
-   has a model): [{:id :class :title :short :parent :score}] best first."
-  [gid text limit]
-  (-> (js/fetch (str "api/graphs/" (js/encodeURIComponent gid) "/search?q=" (js/encodeURIComponent text) "&limit=" limit))
+  "The server's search over graph `gid` in `mode` (:hybrid by default,
+   :semantic, :verbatim — see graph-local/search!): [{:id :class :title :short
+   :parent :score}] best first."
+  [gid text limit & [mode]]
+  (-> (js/fetch (str "api/graphs/" (js/encodeURIComponent gid) "/search?q=" (js/encodeURIComponent text) "&limit=" limit
+                     "&mode=" (name (or mode :hybrid))))
       (p/then (fn [^js r] (if (.-ok r) (.json r) (p/rejected (ex-info (str "HTTP " (.-status r)) {})))))
       (p/then (fn [rows] (vec (for [[id class title short parent score] (js->clj rows)]
                                 {:id id :class class :title title :short short :parent parent :score score}))))))

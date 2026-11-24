@@ -16,7 +16,7 @@
      GET  /api/graphs/<id>/structure        → {nodes: […], edges: […]} (JSON,
                                               ETag = head, If-None-Match → 304)
      GET  /api/graphs/<id>/nodes/<node-id>  → {node children out in} (JSON)
-     GET  /api/graphs/<id>/search?q=…&limit=n → [[id class title short score]]
+     GET  /api/graphs/<id>/search?q=…&limit=n&mode=hybrid|semantic|verbatim → [[id class title short parent score]]
      GET  /api/graphs/<id>/changes?since=n  → {nodes edges head} (JSON)
 
    No authentication: it runs behind an auth proxy."
@@ -188,7 +188,8 @@
   (let [n (fn [k default] (or (some-> (query-param ex k) parse-long) default))]
     (case tail
       "structure" (structure! ex gid)
-      "search" (send-json! ex 200 (json/write-str (graphs/search gid (query-param ex "q") (min 200 (max 1 (n "limit" 20))))))
+      "search" (send-json! ex 200 (json/write-str (graphs/search gid (query-param ex "q") (min 200 (max 1 (n "limit" 20)))
+                                                                  (#{"verbatim" "semantic" "hybrid"} (query-param ex "mode")))))
       "changes" (send-json! ex 200 (json/write-str (graphs/changes-since gid (n "since" 0))))
       (if-let [r (graphs/node gid node-id)]
         (send-json! ex 200 (json/write-str r))

@@ -12,6 +12,8 @@
             [promesa.core :as p]
             [loretile.fold :as fold]
             [loretile.graph-store :as gs]
+            [loretile.llm :as llm]
+            [loretile.vectors :as vectors]
             [loretile.store :as store]))
 
 (def ^:private fold-src (fold-hash))
@@ -131,9 +133,11 @@
                            :ms (js/Math.round (- (js/performance.now) t0))}))
       mode)))
 
+(declare embed-pending!)
+
 (defn- schedule! [gid evs]
   (when @ready
-    (swap! chain (fn [c] (-> c (p/then (fn [_] (sync-graph! gid evs)))
+    (swap! chain (fn [c] (-> c (p/then (fn [_] (p/let [m (sync-graph! gid evs)] (embed-pending! gid) m)))
                              (p/catch (fn [e] (js/console.warn "graph store:" (ex-message e)))))))))
 
 (defn current?
@@ -143,12 +147,81 @@
 
 ;; --- reads ---------------------------------------------------------------------------
 
+(defn- hits [rows]
+  (vec (for [[id class title short parent score] (js->clj rows)]
+         {:id id :class class :title title :short short :parent parent :score score})))
+
 (defn search
-  "FTS over graph `gid`: [{:id :class :title :short :parent :score}] best first."
-  [gid text limit]
-  (p/let [rows (call :search {:graph gid :text text :limit limit})]
-    (vec (for [[id class title short parent score] (js->clj rows)]
-           {:id id :class class :title title :short short :parent parent :score score}))))
+  "The store's search (the Worker's; no network): {:text :vec :model :mode
+   :limit} → [{:id :class :title :short :parent :score}] best first. The
+   caller brings the query's vector — see `search!`."
+  [gid {:keys [text model mode limit] qv :vec}]
+  (p/let [rows (call :search {:graph gid :text text :vec (some-> qv clj->js) :model model
+                              :mode (name (or mode :hybrid)) :limit (or limit 20)})]
+    (hits rows)))
+
+(defonce ^:private query-vecs (atom {}))   ; [model text] → vector — a query asked again costs nothing
+
+(defn- query-vec
+  "The query's vector from the embedding provider (the user's key, inside the
+   daily budget), or nil — no embeddings configured, or refused or failed:
+   the search then goes by words."
+  [model text]
+  (cond
+    (not (llm/embeddings?)) (p/resolved nil)
+    (contains? @query-vecs [model text]) (p/resolved (get @query-vecs [model text]))
+    :else (-> (p/let [[v] (llm/embed! [text])]
+                ;; ponytail: forget all past 256 queries — an LRU when it matters
+                (swap! query-vecs #(assoc (if (> (count %) 256) {} %) [model text] v))
+                v)
+              (p/catch (fn [_] nil)))))
+
+(defn search!
+  "Search graph `gid` in `mode` (:hybrid by default, :semantic, :verbatim):
+   the query's vector is made HERE, by the embedding provider, then the
+   store's `search` takes it (wiki/Graph-Store.md — the store calls nothing)."
+  [gid text limit & [mode]]
+  (let [mode (keyword (or mode :hybrid))
+        model (:embed-model (llm/config))]
+    (p/let [v (if (= :verbatim mode) nil (query-vec model text))]
+      (search gid {:text text :vec v :model model :mode mode :limit limit}))))
+
+;; --- the embedder: vectors for what has none (wiki/Graph-Store.md § Embeddings) ---
+;; Pulls the texts with no vector for the configured model, embeds them in
+;; batches through the provider (the user's key, inside the daily budget —
+;; refused means paused, tried again after the next sync), stores the vectors.
+(defonce ^:private embedding (atom nil))   ; the running round, a promise
+
+(defn- embed-pending!
+  "A round of embedding for graph `gid` — the running one if there is one.
+   A promise, settled when nothing is left (or the provider said no)."
+  [gid]
+  (cond
+    (not (and @ready (llm/embeddings?))) (p/resolved nil)
+    @embedding @embedding
+    :else
+    (let [model (:embed-model (llm/config))
+          run (-> (p/loop []
+                    (p/let [rows (call :pending {:graph gid :model model :limit 50})]
+                      (when (pos? (.-length rows))
+                        (p/let [rs (js->clj rows)
+                                vecs (llm/embed! (mapv second rs))
+                                _ (call :putVectors {:model model :vecs (clj->js (map vector (map first rs) vecs))})]
+                          (p/recur)))))
+                  (p/catch (fn [e] (js/console.info "graph store: embedding paused:" (ex-message e))))
+                  (p/finally #(reset! embedding nil)))]
+      (reset! embedding run)
+      run)))
+
+(defn- store-vectors
+  "For the intake (vectors/from-store): embed what this graph's topics lack,
+   then {topic id → vector} from the store — each text embedded once."
+  [kg model]
+  (let [gid @store/current
+        ids-by-hash (group-by #(gs/text-hash (gs/node-text (val %))) (:concepts kg))]
+    (p/let [_ (embed-pending! gid)
+            rows (call :vectorsFor {:model model :hashes (clj->js (keys ids-by-hash))})]
+      (into {} (for [[h v] (js->clj rows), [id _] (get ids-by-hash h)] [id v])))))
 
 (defn structure [gid] (p/let [s (call :structure {:graph gid})] (js->clj (js/JSON.parse s))))
 
@@ -188,8 +261,9 @@
             _ (when boot? (-> (boot-kg! @store/current @store/events)
                               (p/catch (fn [e] (js/console.warn "graph store: boot from rows failed:" (ex-message e))))))]
       (reset! ready true)
+      (reset! vectors/from-store store-vectors)
       ;; hand the handles over as this page goes (a frozen page may keep them)
-      (.addEventListener js/window "pagehide" (fn [_] (reset! ready false) (some-> @worker (.postMessage #js {:op "pause" :id -1}))))
+      (.addEventListener js/window "pagehide" (fn [_] (reset! ready false) (reset! vectors/from-store nil) (some-> @worker (.postMessage #js {:op "pause" :id -1}))))
       (schedule! @store/current @store/events))))
 
 (defn start!
@@ -232,5 +306,5 @@
              ;; the graph the app renders (built from rows at boot, or folded) = the fold of its log
              :appGraphIsFold (fn [] (let [norm (fn [kg] (into {} (remove (fn [[k v]] (or (nil? v) (#{::fold/eidx ::fold/nbr} k)))) kg))]
                                       (= (norm (store/kg)) (norm (fold/kg @store/events)))))
-             :search (fn [text] (p/let [r (search @store/current text 20)] (clj->js r)))
+             :search (fn [text mode] (p/let [r (search! @store/current text 20 mode)] (clj->js r)))
              :structure (fn [] (p/let [s (call :structure {:graph @store/current})] s))}))

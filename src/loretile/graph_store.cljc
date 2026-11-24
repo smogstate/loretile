@@ -22,7 +22,9 @@
 (defprotocol Graph
   (structure [g graph] "{:nodes [[id class status title short parent] …] :edges [[from type to status] …] :head n}")
   (node [g graph id] "{:node [class node] :children [[class id node] …] :out [edge …] :in [edge …]} or nil")
-  (search [g graph opts] "{:text q :vec v? :limit n} → [{:id :class :title :short :score}] best first")
+  (search [g graph opts] "{:text :vec :model :mode :limit} → [{:id :class :title :short :parent :score}] best first.
+    The store calls nothing: the caller brings the query's vector. mode: :verbatim (the text as a phrase),
+    :semantic (cosine of :vec against :model's vectors), :hybrid (default: words fused with meaning; words only without :vec)")
   (head [g graph] "the seq applied up to")
   (changes-since [g graph seq] "rows opened or closed after seq: {:nodes [row] :edges [row] :head n}")
   (apply-changes! [g graph changes] "the ONLY write — row changes for one or more events, one transaction")

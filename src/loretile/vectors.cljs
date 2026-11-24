@@ -46,6 +46,11 @@
                  :when v]
              [id {:vec v}])))
 
+;; the graph store's embedder, when this tab holds it (graph_local sets it):
+;; (fn [kg model] → promise of {topic id → vector}) — the topics are then
+;; embedded ONCE, by the store, not here as well
+(defonce from-store (atom nil))
+
 (defn ensure!
   "Embed concepts whose text changed since last time (all, when the model
    changed). Resolves to the number embedded; 0 when embeddings aren't configured."
@@ -60,10 +65,15 @@
                                  [h t])))]
       (if (empty? stale)
         (p/resolved 0)
-        (p/let [vs (llm/embed! (mapv second stale))]
-          (swap! cache update :vecs into (map (fn [[h _] v] [h v]) stale vs))
+        (p/let [;; the store's vectors first; what it lacks is embedded here
+                by-id (if-let [f @from-store] (p/catch (f kg model) (constantly {})) {})
+                found (into {} (keep (fn [[id c]] (when-let [v (get by-id id)] [(text-hash (concept-text c)) v]))) (:concepts kg))
+                _ (swap! cache update :vecs into found)
+                rest (vec (remove (fn [[h _]] (contains? found h)) stale))
+                vs (if (seq rest) (llm/embed! (mapv second rest)) [])]
+          (swap! cache update :vecs into (map (fn [[h _] v] [h v]) rest vs))
           (persist!)
-          (count stale))))))
+          (count rest))))))
 
 (defn query-vec [text]
   (p/let [[v] (llm/embed! [text])] v))

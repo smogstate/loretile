@@ -150,23 +150,29 @@
 (defn node [gid id] (read-graph gid (fn [db _] (proj/node db gid id))))
 (defn changes-since [gid n] (read-graph gid (fn [db _] (proj/changes-since db gid n))))
 
+(defonce ^:private query-vecs (atom {}))   ; [model text] → vector — a query asked again costs nothing
+
+(defn- query-vec
+  "The query's vector from the embedding provider (inside the daily cap), or
+   nil: no model, or the provider refused or failed — the search then goes
+   by words."
+  [model text]
+  (or (get @query-vecs [model text])
+      (try (when-let [v (first (embedder/embed! @db [text]))]   ; outside any lock: a gateway call
+             ;; ponytail: forget all past 256 queries — an LRU when it matters
+             (swap! query-vecs #(assoc (if (> (count %) 256) {} %) [model text] v))
+             v)
+           (catch Exception e (log "query embedding failed, words only:" (ex-message e)) nil))))
+
 (defn search
-  "[[id class title short parent score]]: FTS, merged with cosine over the vectors
-   by reciprocal rank fusion when an embedding model is configured and the
-   query could be embedded (inside the daily cap)."
-  [gid text limit]
-  (let [model (embedder/model)
-        qv (when (and model (not (str/blank? text)))
-             (try (first (embedder/embed! @db [text]))   ; outside the lock: a gateway call
-                  (catch Exception e (log "query embedding failed, words only:" (ex-message e)) nil)))]
-    (read-graph gid (fn [db _]
-                      (let [fts (proj/search db gid text (* 2 limit))]
-                        (if-not qv
-                          (vec (take limit fts))
-                          (let [near (embedder/nearest (proj/vectors db gid model) qv (* 2 limit))
-                                fused (embedder/rrf [(map first fts) near] limit)
-                                info (into {} (map (juxt first identity)) (proj/rows-of db gid (map key fused)))]
-                            (vec (for [[id score] fused :let [r (info id)] :when r] (conj r score))))))))))
+  "Search graph `gid` (wiki/Graph-Store.md): the query's vector is made HERE,
+   by the embedding provider — the store's search (`proj/search`) takes it
+   and calls nothing. `mode`: hybrid (default), semantic, verbatim."
+  [gid text limit & [mode]]
+  (let [mode (or mode "hybrid")
+        model (embedder/model)
+        v (when (and model (not= "verbatim" mode) (not (str/blank? text))) (query-vec model text))]
+    (read-graph gid (fn [db _] (proj/search db gid {:text text :vec v :model model :mode mode :limit limit})))))
 
 ;; --- the API -----------------------------------------------------------------------
 

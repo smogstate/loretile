@@ -75,9 +75,12 @@
    what can be found, `objects-of` what material a fenced reader sees. Up to
    8 lines «id — title: definition…», with the matching words of material
    when only material matched."
-  ([kg fence query] (search-nodes kg fence query nil))
-  ([kg fence query objects-of]
-   (let [q (distinct (stems query))
+  ([kg fence query] (search-nodes kg fence query nil nil))
+  ([kg fence query objects-of] (search-nodes kg fence query objects-of nil))
+  ([kg fence query objects-of mode]
+   ;; :verbatim — the query as written, a phrase; anything else — its words
+   ;; (no vectors in memory: :semantic and :hybrid search by words here)
+   (let [q (if (= :verbatim (keyword mode)) [(str/trim (fold-text query))] (distinct (stems query)))
          mat (fn [id] (str/join "\n" (keep :text (if (and fence objects-of) (objects-of id) (fold/concept-objects kg id)))))
          score (fn [[id c]] (let [t (fold-text (:title c)) d (fold-text (:definition c))
                                   m (fold-text (mat id))]

@@ -188,12 +188,17 @@ const fail = (m) => { console.error('SERVER CHECK FAILED: ' + m); process.exitCo
     if (sqlTexts < 43) fail('the embedder embeds the demo\'s texts: ' + sqlTexts);
     r = await get('/sql/search?q=' + encodeURIComponent(word));
     if (!embedded.includes(word) || !JSON.parse(r.text).some((h) => h[0] === from)) fail('search embeds the query and still finds the node: ' + r.text.slice(0, 200));
+    for (const mode of ['verbatim', 'semantic', 'hybrid']) {
+      const m = await get('/sql/search?mode=' + mode + '&q=' + encodeURIComponent(word));
+      if (m.status !== 200 || !Array.isArray(JSON.parse(m.text))) fail(`search mode ${mode} answers: ` + m.text.slice(0, 120));
+    }
     const vineyard = fs.readFileSync(path.join(ROOT, 'kg/demo/vineyard.ru.edn'), 'utf8');
     r = await post('vineyard', `{:after 0 :events [\n${vineyard}\n]}`);
     if (r.status !== 200) fail('a second demo is stored: ' + r.text.slice(0, 200));
     await sleep(11000); // two embedder rounds
     const tokens = embedded.reduce((n, t) => n + Math.ceil(t.length / 4), 0);
-    if (embedded.length !== sqlTexts + 1 || tokens > CAP) fail(`past the cap nothing is embedded: ${embedded.length} texts, ${tokens} tokens`);
+    // the query was embedded before the snapshot and is cached: asked again it costs nothing
+    if (embedded.length !== sqlTexts || tokens > CAP) fail(`past the cap nothing is embedded (and a repeated query is not embedded again): ${embedded.length} texts, ${tokens} tokens; after the snapshot: ${JSON.stringify(embedded.slice(sqlTexts).map((t) => t.slice(0, 50)))}`);
     if (!log.includes('embedding cap reached')) fail('the cap is logged');
 
     // --- a restart: no rebuild, the same head; a lost projection is rebuilt ---------------
