@@ -28,9 +28,11 @@ install:
 # (Python) is loaded by the committed worker js/pyrunner.js from js/pyodide/.
 PGLITE := node_modules/@electric-sql/pglite/dist
 PYODIDE := node_modules/pyodide
+SQLITE := node_modules/@sqlite.org/sqlite-wasm/dist
 engines: install
-	@mkdir -p public/js/pglite public/js/pyodide
+	@mkdir -p public/js/pglite public/js/pyodide public/js/sqlite
 	@cp $(PGLITE)/*.js $(PGLITE)/*.wasm $(PGLITE)/pglite.data public/js/pglite/
+	@cp $(SQLITE)/index.mjs $(SQLITE)/sqlite3.wasm public/js/sqlite/
 	@cp $(PYODIDE)/pyodide.mjs $(PYODIDE)/pyodide.asm.mjs $(PYODIDE)/pyodide.asm.wasm \
 	    $(PYODIDE)/python_stdlib.zip $(PYODIDE)/pyodide-lock.json public/js/pyodide/
 
@@ -87,8 +89,8 @@ define app-files
 	@cp public/icon.svg $(1)/
 	@cp public/css/app.css public/css/driver.css $(1)/css/
 	@cp public/js/main.js public/js/pdf.min.mjs public/js/pdf.worker.min.mjs \
-	    public/js/pyrunner.js public/js/pgrunner.js $(1)/js/
-	@cp -R public/js/pglite public/js/pyodide $(1)/js/
+	    public/js/pyrunner.js public/js/pgrunner.js public/js/graphstore.js $(1)/js/
+	@cp -R public/js/pglite public/js/pyodide public/js/sqlite $(1)/js/
 endef
 
 dist: release
@@ -170,7 +172,8 @@ deploy: clean-tree test smoke deploy-landing
 	done && \
 	$(call put,public/js/pyrunner.js,app/js/pyrunner.js,text/javascript; charset=utf-8,no-cache) && \
 	$(call put,public/js/pgrunner.js,app/js/pgrunner.js,text/javascript; charset=utf-8,no-cache) && \
-	for f in public/js/pglite/* public/js/pyodide/*; do \
+	$(call put,public/js/graphstore.js,app/js/graphstore.js,text/javascript; charset=utf-8,no-cache) && \
+	for f in public/js/pglite/* public/js/pyodide/* public/js/sqlite/*; do \
 		case $$f in *.wasm) ct=application/wasm;; *.js|*.mjs) ct="text/javascript; charset=utf-8";; \
 			*.json) ct=application/json;; *.zip) ct=application/zip;; *) ct=application/octet-stream;; esac; \
 		gzip -9c $$f | curl -sf -X PUT -H "Authorization: Bearer $$IAM_TOKEN" \

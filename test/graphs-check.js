@@ -198,26 +198,30 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     'a run written by an older version is recoverable, not a dead end');
 
 
-  // --- storage safety: a switch that cannot shelve must NOT proceed ---------
-  // (silently losing the open graph used to be the cost of navigating)
+  // --- storage safety (wiki/Graph-Store.md): logs are stored one event at a
+  // time, so a switch WRITES NO LOG — both are already stored — and a store
+  // that refuses every save can neither stop it nor lose either graph (an
+  // edit it refuses is storage-check's A1)
   await page.goto(BASE + '#/', { waitUntil: 'networkidle0' });
   await sleep(600);
   const beforeNodes = await nodes();
+  const leftTitle = await page.evaluate(async () => { location.hash = '#/graphs'; await new Promise((r) => setTimeout(r, 400));
+    const t = document.querySelector('.entity-row.on .entity-title'); return t && t.textContent; });
   await page.evaluate(() => {
-    // logs live in IndexedDB: a store that refuses every save
     window.__put = IDBObjectStore.prototype.put;
     IDBObjectStore.prototype.put = function () { throw new DOMException('quota', 'QuotaExceededError'); };
   });
   await G.openGraph(page, BASE, /Мой граф/);
   await sleep(700);
-  check(await nodes() === beforeNodes, 'a switch that cannot shelve leaves the open graph untouched');
-  check(await page.$('.error') !== null, 'and says so instead of failing silently');
-  const survived = await page.evaluate(() => (loretileLog() || '').length);
-  check(survived > 1000, `the open graph's log is still there (${survived} chars)`);
+  check(await page.$('.error') === null, 'a switch under a refusing store goes through without an error — it writes no log');
   await page.evaluate(() => { IDBObjectStore.prototype.put = window.__put; });
   await page.reload({ waitUntil: 'networkidle0' });
   await sleep(700);
-  check(await nodes() === beforeNodes, 'and it is still intact after a reload');
+  await G.openGraph(page, BASE, new RegExp('^' + leftTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'));
+  await sleep(700);
+  check(await nodes() === beforeNodes, `the graph it left is intact after a reload (${beforeNodes} topics)`);
+  const survived = await page.evaluate(() => (loretileLog() || '').length);
+  check(survived > 1000, `its log is all there (${survived} chars)`);
 
   // security review 2026-10-03: a log from another device is untrusted, so
   // import validates every event; this calls store internals, only on a dev build

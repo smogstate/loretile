@@ -23,6 +23,7 @@
    [[:llm :max-output] :int nil]
    [[:llm :embed-url] :string nil]
    [[:llm :embed-model] :string nil]
+   [[:llm :embed-daily-tokens] :int 1000000]    ; the server embedder's cap (≈ chars/4), fails closed
    [[:llm :timeout-ms] :int 300000]
    [[:llm :token] :string nil]
    [[:llm :token-provider] :symbol nil]
@@ -32,6 +33,7 @@
    [[:llm :auth-prefix] :string "Bearer "]
    [[:merges :url] :string nil]
    [[:graphs :url] :string nil]
+   [[:graphs :projection] :string nil]          ; SQLite file; default: projection.sqlite3 in the graphs dir (file://) or the temp dir
    [[:aws :region] :string nil]
    [[:aws :endpoint] :string nil]])
 

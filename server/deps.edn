@@ -1,7 +1,12 @@
-{:paths ["src"]
+{:paths ["src" "../src"]   ; ../src: the shared cljc (fold, graph-store, schema, profile)
  :deps {org.clojure/clojure {:mvn/version "1.12.7"}
         software.amazon.awssdk/s3 {:mvn/version "2.59.5"
                                    :exclusions [software.amazon.awssdk/netty-nio-client
                                                 software.amazon.awssdk/apache-client]}
         software.amazon.awssdk/url-connection-client {:mvn/version "2.59.5"}
-        org.slf4j/slf4j-nop {:mvn/version "1.7.36"}}}
+        org.slf4j/slf4j-nop {:mvn/version "1.7.36"}
+        metosin/malli {:mvn/version "0.20.3"}
+        funcool/promesa {:mvn/version "11.0.678"}
+        org.clojure/data.json {:mvn/version "2.5.2"}
+        org.xerial/sqlite-jdbc {:mvn/version "3.54.1.0"}}
+ :aliases {:test {:extra-paths ["test"] :jvm-opts ["--enable-native-access=ALL-UNNAMED"] :main-opts ["-m" "loretile.server.projection-test"]}}}

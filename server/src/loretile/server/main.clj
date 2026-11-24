@@ -10,14 +10,22 @@
      GET  /api/merges/<key>       → one merge file
      GET  /api/graphs             → every server-kept graph (EDN)
      GET  /api/graphs/<id>?after=n → {:seq :events} after batch n (0: all)
-     POST /api/graphs/<id>/events → store {:events [...] :after n}; answers
-                                    {:seq :stored :events} (what it lacked)
+     POST /api/graphs/<id>/events → judge + store {:events [...] :after n};
+                                    answers {:seq :stored :events :head} (what
+                                    it lacked), or 422 {:error … :event id}
+     GET  /api/graphs/<id>/structure        → {nodes: […], edges: […]} (JSON,
+                                              ETag = head, If-None-Match → 304)
+     GET  /api/graphs/<id>/nodes/<node-id>  → {node children out in} (JSON)
+     GET  /api/graphs/<id>/search?q=…&limit=n → [[id class title short score]]
+     GET  /api/graphs/<id>/changes?since=n  → {nodes edges head} (JSON)
 
    No authentication: it runs behind an auth proxy."
   (:gen-class)
-  (:require [clojure.edn :as edn]
+  (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [loretile.server.config :as config]
+            [loretile.server.embedder :as embedder]
             [loretile.server.graphs :as graphs]
             [loretile.server.log :refer [log]]
             [loretile.server.s3 :as s3]
@@ -163,10 +171,34 @@
 (defn- send-edn! [ex status data]
   (send! ex status "application/edn; charset=utf-8" (.getBytes ^String (pr-str data) StandardCharsets/UTF_8)))
 
+(defn- send-json! [ex status ^String text]
+  (send! ex status "application/json; charset=utf-8" (.getBytes text StandardCharsets/UTF_8)))
+
+(defn- structure! [^HttpExchange ex gid]
+  (let [[head text] (graphs/structure gid)
+        etag (str "\"" head "\"")
+        h (.getResponseHeaders ex)]
+    (.set h "ETag" etag)
+    (.set h "Cache-Control" "no-cache")
+    (if (= etag (.getFirst (.getRequestHeaders ex) "If-None-Match"))
+      (send! ex 304 nil (byte-array 0))
+      (send-json! ex 200 text))))
+
+(defn- graph-read! [^HttpExchange ex gid tail node-id]
+  (let [n (fn [k default] (or (some-> (query-param ex k) parse-long) default))]
+    (case tail
+      "structure" (structure! ex gid)
+      "search" (send-json! ex 200 (json/write-str (graphs/search gid (query-param ex "q") (min 200 (max 1 (n "limit" 20))))))
+      "changes" (send-json! ex 200 (json/write-str (graphs/changes-since gid (n "since" 0))))
+      (if-let [r (graphs/node gid node-id)]
+        (send-json! ex 200 (json/write-str r))
+        (send-text! ex 404 "no such node")))))
+
 (defn- graphs-api! [^HttpExchange ex]
   (let [method (.getRequestMethod ex)
         rel (subs (.getPath (.getRequestURI ex)) (count "/api/graphs"))
-        [_ gid tail] (re-matches #"/?([^/]*)(/events)?/?" rel)]
+        [_ gid tail node-id] (re-matches #"/?([^/]*)(?:/(events|structure|search|changes|nodes/(.+?)))?/?" rel)
+        tail (if node-id "nodes" tail)]
     (cond
       (not (graphs/configured?)) (send-text! ex 404 "graphs url is not configured")
       (nil? gid) (send-text! ex 404 "Not found")
@@ -174,11 +206,13 @@
       (not (graphs/valid-id? gid)) (send-text! ex 400 "bad graph id")
       (and (nil? tail) (= "GET" method))
       (send-edn! ex 200 (graphs/events-after gid (some-> (query-param ex "after") parse-long)))
-      (and tail (= "POST" method))
+      (and (= "events" tail) (= "POST" method))
       (let [body (edn/read-string (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8))]
         (if (and (map? body) (sequential? (:events body)))
-          (send-edn! ex 200 (graphs/append! gid (vec (:events body)) (:after body)))
+          (let [r (graphs/append! gid (vec (:events body)) (:after body))]
+            (send-edn! ex (if (:error r) 422 200) r))
           (send-text! ex 400 "body must be {:events [...] :after n}")))
+      (and tail (not= "events" tail) (= "GET" method)) (graph-read! ex gid tail node-id)
       :else (send-text! ex 405 "Method not allowed"))))
 
 ;; --- routes ---------------------------------------------------------------------------
@@ -218,4 +252,5 @@
          (log "cannot load config:" (ex-message e))
          (System/exit 1)))
   (config/start-reloading!)
+  (when (graphs/configured?) (embedder/start! graphs/db))
   (start!))

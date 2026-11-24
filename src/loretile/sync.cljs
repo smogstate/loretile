@@ -67,8 +67,34 @@
 
 (defn- api-get [path]
   (-> (js/fetch (str "api/graphs" path))
-      (p/then (fn [^js r] (if (.-ok r) (.text r) (p/rejected (ex-info (str "HTTP " (.-status r)) {:status (.-status r)})))))
+      ;; 422: the server's guard refused the batch (wiki/Graph-Store.md) — its
+      ;; body names the event and why
+      (p/then (fn [^js r] (cond (.-ok r) (.text r)
+                                (= 422 (.-status r)) (p/then (.text r) #(p/rejected (ex-info "refused" {:status 422 :body (reader/read-string %)})))
+                                :else (p/rejected (ex-info (str "HTTP " (.-status r)) {:status (.-status r)})))))
       (p/then reader/read-string)))
+
+(defn search
+  "The server's search over graph `gid` (FTS, fused with its vectors when it
+   has a model): [{:id :class :title :short :parent :score}] best first."
+  [gid text limit]
+  (-> (js/fetch (str "api/graphs/" (js/encodeURIComponent gid) "/search?q=" (js/encodeURIComponent text) "&limit=" limit))
+      (p/then (fn [^js r] (if (.-ok r) (.json r) (p/rejected (ex-info (str "HTTP " (.-status r)) {})))))
+      (p/then (fn [rows] (vec (for [[id class title short parent score] (js->clj rows)]
+                                {:id id :class class :title title :short short :parent parent :score score}))))))
+
+(defn- refused!
+  "The server refused pending event `id` (its guard, on the graph as it
+   stands there): it leaves this log and the pending list, and a person sees
+   why — the same card a refusal found while laying edits in makes."
+  [gid {:keys [error event]}]
+  (let [log (store/graph-events gid)
+        e (first (filter #(= event (:ev/id %)) log))]
+    (when e
+      (store/replace-log! gid (vec (remove #(= event (:ev/id %)) log)))
+      (swap! sync-state update-in [gid :pending] (fn [ps] (vec (remove #{event} ps))))
+      (swap! conflicts update gid (fnil conj []) {:kind :refused :mine e :error error :id (str (random-uuid)) :at (js/Date.now)})
+      (save!))))
 
 (defn- api-post [path body]
   (-> (js/fetch (str "api/graphs" path) #js {:method "POST" :headers #js {"content-type" "application/edn"}
@@ -164,7 +190,10 @@
                                (count mine))))]
             (swap! status assoc gid :ok)
             {:pulled pulled :pushed pushed})
-          (p/catch (fn [e] (js/console.warn "loretile sync" gid (ex-message e) e) (swap! status assoc gid :offline) nil))
+          (p/catch (fn [e]
+                     (if (= 422 (:status (ex-data e)))
+                       (do (refused! gid (:body (ex-data e))) (swap! status assoc gid :ok) nil)
+                       (do (js/console.warn "loretile sync" gid (ex-message e) e) (swap! status assoc gid :offline) nil))))
           (p/finally #(swap! busy disj gid))))))
 
 ;; --- a person decides ----------------------------------------------------------

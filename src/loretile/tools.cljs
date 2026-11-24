@@ -115,7 +115,9 @@
   (p/loop [user user hop 0]
     (p/let [reply (p/then (llm/chat! system user (when max-tokens {:max-tokens max-tokens})) parse)]
       (if (and (seq (:tools reply)) (< hop max-hops))
-        (let [results (mapv #(run-call ctx %) (take max-calls (:tools reply)))]
+        ;; a read may answer later (search reads the graph store's Worker)
+        (p/let [results (p/all (map (fn [c] (p/let [r (:result c)] (assoc c :result r)))
+                                    (mapv #(run-call ctx %) (take max-calls (:tools reply)))))]
           (doseq [r results] (when on-call (on-call r)))
           (p/recur (str user "\n\n" (results-block results)) (inc hop)))
         (do (when (and (seq (:tools reply)) on-limit) (on-limit))

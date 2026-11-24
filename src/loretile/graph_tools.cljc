@@ -98,6 +98,27 @@
                              ": " (clip (:definition c) 120)
                              (when only-mat? (when-let [s (snippet (mat id) q 140)] (str "\n    material: " s))))))))))
 
+(defn format-hits
+  "Search hits from the graph store (FTS, best first: {:id :class :short
+   :parent}) as `search-nodes` lines: a hit on material names its topic, with
+   the matching words; up to 8 topics, each once. nil when none is a topic of
+   `kg` inside `fence`."
+  [kg fence hits]
+  (let [lines (->> hits
+                   (keep (fn [{:keys [id class short parent]}]
+                           (let [cid (if (= "concepts" class) id parent)]
+                             (when (and (get-in kg [:concepts cid]) (or (nil? fence) (fence cid)))
+                               [cid (when (not= "concepts" class) short)]))))
+                   (reduce (fn [acc [cid mat]] (if (some #(= cid (first %)) acc) acc (conj acc [cid mat]))) [])
+                   (take 8))]
+    (when (seq lines)
+      (str/join "\n" (for [[cid mat] lines
+                           :let [c (get-in kg [:concepts cid])]]
+                       (str cid " — " (:title c)
+                            (when (:kind c) (str " [" (name (:kind c)) "]"))
+                            ": " (clip (:definition c) 120)
+                            (when mat (str "\n    material: " (clip mat 140)))))))))
+
 (defn- edge-props-note
   "An edge's own properties, inline after its endpoint: « {since = 2024}»."
   [e]

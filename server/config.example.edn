@@ -13,6 +13,9 @@
        ;; :max-output 16000               ; longest reply the model allows
        ;; :embed-url "https://llm-gateway.example/v1/embeddings"
        ;; :embed-model "text-embedding"
+       ;; the server embeds graph texts itself (search by meaning) under this
+       ;; DAILY cap, tokens ≈ chars/4; past it nothing until tomorrow (UTC)
+       :embed-daily-tokens 1000000
        :timeout-ms 300000
 
        ;; the token — one of:
@@ -31,7 +34,11 @@
  ;; graphs kept by the server (local-first: browsers sync their event logs
  ;; here): {graph-id}/{seq}.edn — one object per stored batch. A directory
  ;; (file:///var/lib/loretile/graphs) or a bucket and prefix (s3://…/graphs)
- :graphs {:url "file:///var/lib/loretile/graphs"}
+ :graphs {:url "file:///var/lib/loretile/graphs"
+          ;; the projection (SQLite, rebuilt from the batches when lost);
+          ;; default: projection.sqlite3 in the graphs dir, or the temp dir for s3://
+          ;; :projection "/var/lib/loretile/projection.sqlite3"
+          }
 
  ;; S3 client for the config file and the merges (credentials: the AWS
  ;; default chain — IAM role, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY…)

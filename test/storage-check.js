@@ -93,13 +93,21 @@ fs.writeFileSync(DOC, '# Notes\nA short note about joins.\n');
   await sleep(200);
 
   // --- A15 ------------------------------------------------------------------
+  // Logs are stored one event at a time (wiki/Graph-Store.md): a switch WRITES
+  // NO LOG — both are already stored — so a refusing store neither stops it nor
+  // loses either graph; only an edit writes, and A1 shows that refused
   const curBefore = await ls('loretile-graph');
   const rows = await G.listRows(page, BASE);
+  const onTitle = await page.evaluate(() => document.querySelector('.entity-row.on .entity-title').textContent);
   await page.evaluate(() => [...document.querySelectorAll('.entity-row')].find((e) => !e.classList.contains('on')).querySelector('.entity-title').click());
   await sleep(500);
-  check((await ls('loretile-graph')) === curBefore, 'A15: a refused switch leaves `current` on the open graph');
-  check((await nodes()).length === sqlNodes, 'A15: and the open graph still shows (' + rows.length + ' graphs)');
+  check((await ls('loretile-graph')) !== curBefore, 'A15: a switch under a refusing store goes through — it writes no log');
   await fail([]);
+  await G.listRows(page, BASE);
+  await page.evaluate((t) => [...document.querySelectorAll('.entity-row')].find((e) => e.querySelector('.entity-title').textContent === t).querySelector('.entity-title').click(), onTitle);
+  await sleep(500);
+  check((await ls('loretile-graph')) === curBefore && (await nodes()).length === sqlNodes,
+    'A15: and the graph it left is intact when switched back (' + rows.length + ' graphs)');
 
   // --- A7: arm a removal, switch graphs inside the ring -----------------------
   await page.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await page.reload({ waitUntil: 'networkidle0' }); await sleep(800);

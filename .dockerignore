@@ -8,4 +8,5 @@ public/js/*
 !public/js/pdf.worker.min.mjs
 !public/js/pyrunner.js
 !public/js/pgrunner.js
+!public/js/graphstore.js
 server/.cpcache

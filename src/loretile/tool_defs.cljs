@@ -7,7 +7,10 @@
             [loretile.chat :as chat]
             [loretile.exercise :as ex]
             [loretile.fold :as fold]
+            [loretile.graph-local :as graph-local]
+            [loretile.sync :as sync]
             [loretile.graph-tools :as gt]
+            [promesa.core :as p]
             [loretile.profile :as profile]
             [loretile.guide :as guide]
             [loretile.i18n :refer [t]]
@@ -24,8 +27,20 @@
   :doc "найти узлы графа (темы — в учебном графе) по словам в названии, определении и материалах; вернёт id, название, начало определения"
   ;; `fence` (the tutor's course): only topics inside it are found, and only
   ;; the material a learner of that course reads is searched
-  :handler (fn [{:keys [kg fence locale]} {:keys [query]}]
-             (gt/search-nodes kg fence query (when fence #(learn/objects-of kg % locale (fence %)))))})
+  ;; the graph store's FTS when this tab holds it and it holds this graph as
+  ;; it stands (wiki/Graph-Store.md); words in memory otherwise, and inside a
+  ;; tutor's fence (what a learner of the course may read decides there)
+  :handler (fn [{:keys [kg fence locale graph-id]} {:keys [query]}]
+             (let [lexical #(gt/search-nodes kg fence query (when fence (fn [id] (learn/objects-of kg id locale (fence id)))))]
+               (cond
+                 (or (nil? graph-id) fence) (lexical)
+                 ;; backend mode: the server's projection (wiki/Graph-Store.md)
+                 sync/enabled? (-> (p/let [hits (sync/search graph-id query 40)] (or (gt/format-hits kg nil hits) (lexical)))
+                                   (p/catch (fn [_] (lexical))))
+                 (graph-local/current? graph-id (store/graph-events graph-id))
+                 (-> (p/let [hits (graph-local/search graph-id query 40)] (or (gt/format-hits kg nil hits) (lexical)))
+                     (p/catch (fn [_] (lexical))))
+                 :else (lexical))))})
 
 (tools/register!
  {:name "open-node" :confirm :auto

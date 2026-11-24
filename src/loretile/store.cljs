@@ -86,39 +86,82 @@
 (defn- idb-open []
   (js/Promise.
    (fn [ok no]
-     ;; version 2: an "aside" store for logs in the old event format
-     (let [r (.open js/indexedDB "loretile" 2)]
+     ;; version 2: an "aside" store for logs in the old event format; version 3
+     ;; (wiki/Graph-Store.md): "events", ONE RECORD PER EVENT keyed [graph seq] —
+     ;; an edit writes its event, not the whole log (tens of MB at 40k topics).
+     ;; "logs" (a whole log per graph) is read once more and moved over
+     (let [r (.open js/indexedDB "loretile" 3)]
        (set! (.-onupgradeneeded r)
              (fn [] (let [d (.-result r)]
-                      (doseq [st ["logs" "aside"]]
+                      (doseq [st ["logs" "aside" "events"]]
                         (when-not (.contains (.-objectStoreNames d) st) (.createObjectStore d st))))))
        (set! (.-onsuccess r) #(ok (.-result r)))
        (set! (.-onerror r) #(no (.-error r)))))))
 
+(defn- graph-range [gid] (js/IDBKeyRange.bound #js [gid 0] #js [gid js/Infinity]))
+
+;; what "events" holds per graph: [count last-id] — a save of a log that only
+;; grew writes the new events; any other log is rewritten whole
+(defonce ^:private saved (atom {}))
+
 (defn- idb-read
-  "Promise of {graph id → log}: every log, or just `gid`'s."
+  "Promise of {graph id → log}: every log, or just `gid`'s — the per-event
+   records, plus any whole log still in the old \"logs\" store (`:legacy`
+   lists those graph ids, to move over)."
   ([] (idb-read nil))
   ([gid]
    (js/Promise.
     (fn [ok no]
-      (let [st (.objectStore (.transaction @db "logs" "readonly") "logs")
-            ks (if gid (.getAllKeys st gid) (.getAllKeys st))
-            vs (if gid (.getAll st gid) (.getAll st))]
-        (set! (.-onerror vs) #(no (.-error vs)))
-        (set! (.-onsuccess vs)
-              #(ok (into {} (map (fn [k v] [k (try (reader/read-string v) (catch :default _ []))])
-                                 (.-result ks) (.-result vs))))))))))
+      (let [tx (.transaction @db #js ["events" "logs"] "readonly")
+            ev (.objectStore tx "events")
+            lg (.objectStore tx "logs")
+            eks (if gid (.getAllKeys ev (graph-range gid)) (.getAllKeys ev))
+            evs (if gid (.getAll ev (graph-range gid)) (.getAll ev))
+            lks (if gid (.getAllKeys lg gid) (.getAllKeys lg))
+            lvs (if gid (.getAll lg gid) (.getAll lg))]
+        (set! (.-onerror tx) #(no (.-error tx)))
+        (set! (.-oncomplete tx)
+              (fn []
+                (let [per (reduce (fn [m [k v]]
+                                    (let [g (aget k 0)]
+                                      (update m g (fnil conj []) (try (reader/read-string v) (catch :default _ nil)))))
+                                  {} (map vector (.-result eks) (.-result evs)))
+                      per (into {} (map (fn [[g es]] [g (vec (remove nil? es))])) per)
+                      legacy (into {} (keep (fn [[k v]] (when-not (contains? per k)
+                                                          [k (try (reader/read-string v) (catch :default _ []))])))
+                                   (map vector (.-result lks) (.-result lvs)))]
+                  (doseq [[g es] per] (swap! saved assoc g [(count es) (:ev/id (peek es))]))
+                  (ok (with-meta (merge per legacy) {:legacy (set (keys legacy))}))))))))))
+
+(defn- write-log!
+  "Into transaction `tx`: graph `gid`'s log `evs` — only the events past what
+   is saved when the log grew, all of it otherwise."
+  [^js tx gid evs]
+  (let [st (.objectStore tx "events")
+        [n last-id] (get @saved gid)
+        grew? (and n (<= n (count evs)) (or (zero? n) (= last-id (:ev/id (nth evs (dec n))))))
+        from (if grew? n 0)]
+    (when-not grew? (.delete st (graph-range gid)))
+    (doseq [i (range from (count evs))]
+      (.put st (pr-str (nth evs i)) #js [gid i]))
+    (.delete (.objectStore tx "logs") gid)
+    (swap! saved assoc gid [(count evs) (some-> (peek evs) :ev/id)])))
 
 (defn- save-log!
-  "Save graph `gid`'s whole log. false when storage refuses at once (no
-   database, a full disk reported synchronously) — the edit is then refused;
-   a refusal that arrives later raises the banner, and the log stays in
-   memory, so the next save writes it whole again."
+  "Save graph `gid`'s log (its new events, when it only grew). false when
+   storage refuses at once (no database, a full disk reported
+   synchronously) — the edit is then refused; a refusal that arrives later
+   raises the banner, and the log stays in memory, so the next save writes
+   it whole again."
   [gid evs]
-  (let [fail! #(reset! last-error {:error :storage-full :detail gid})]
+  ;; a refused or aborted transaction wrote NOTHING: what was saved before
+  ;; still is — forgetting it would force a whole rewrite at the next save
+  (let [prev (get @saved gid)
+        fail! #(do (swap! saved (fn [m] (if prev (assoc m gid prev) (dissoc m gid))))
+                   (reset! last-error {:error :storage-full :detail gid}))]
     (try
-      (let [tx (.transaction @db "logs" "readwrite")]
-        (.put (.objectStore tx "logs") (pr-str evs) gid)
+      (let [tx (.transaction @db #js ["events" "logs"] "readwrite")]
+        (write-log! tx gid evs)
         (set! (.-oncomplete tx) #(some-> tabs (.postMessage gid)))
         (set! (.-onabort tx) fail!)
         true)
@@ -129,9 +172,8 @@
   [logs]
   (js/Promise.
    (fn [ok no]
-     (let [tx (.transaction @db "logs" "readwrite")
-           st (.objectStore tx "logs")]
-       (doseq [[gid evs] logs] (.put st (pr-str evs) gid))
+     (let [tx (.transaction @db #js ["events" "logs"] "readwrite")]
+       (doseq [[gid evs] logs] (swap! saved dissoc gid) (write-log! tx gid evs))
        (set! (.-oncomplete tx) ok)
        (set! (.-onabort tx) #(no (.-error tx)))))))
 
@@ -146,14 +188,20 @@
    (an insurance, never read), removed from the logs."
   [logs]
   (try
-    (let [tx (.transaction @db #js ["aside" "logs"] "readwrite")]
+    (let [tx (.transaction @db #js ["aside" "logs" "events"] "readwrite")]
       (doseq [[gid evs] logs]
         (.put (.objectStore tx "aside") (pr-str evs) gid)
-        (.delete (.objectStore tx "logs") gid)))
+        (.delete (.objectStore tx "logs") gid)
+        (.delete (.objectStore tx "events") (graph-range gid))
+        (swap! saved dissoc gid)))
     (catch :default _ nil)))
 
 (defn- drop-log! [gid]
-  (try (.delete (.objectStore (.transaction @db "logs" "readwrite") "logs") gid) (catch :default _ nil)))
+  (swap! saved dissoc gid)
+  (try (let [tx (.transaction @db #js ["logs" "events"] "readwrite")]
+         (.delete (.objectStore tx "logs") gid)
+         (.delete (.objectStore tx "events") (graph-range gid)))
+       (catch :default _ nil)))
 
 (defn- persist! [] (save-log! @current @events))
 
@@ -204,8 +252,9 @@
     (-> (idb-open)
         (.then (fn [d] (reset! db d) (idb-read)))
         (.then (fn [stored]
-                 ;; localStorage's copies go only once IndexedDB has them
-                 (-> (idb-put-all logs)
+                 ;; localStorage's copies go only once IndexedDB has them; a whole
+                 ;; log still in the old "logs" store becomes per-event records
+                 (-> (idb-put-all (merge (select-keys stored (:legacy (meta stored))) logs))
                      (.then #(doseq [k ls-keys] (js/localStorage.removeItem k)))
                      (.catch #(reset! last-error {:error :storage-full :detail "indexeddb"}))
                      (.then (constantly (merge stored logs))))))

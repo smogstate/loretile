@@ -2,6 +2,7 @@
   (:require [reagent.dom.client :as rdc]
             [loretile.i18n :as i18n]
             [loretile.chat :as chat]
+            [loretile.graph-local :as graph-local]
             [loretile.merge :as mrg]
             [loretile.store :as store]
             [loretile.sync :as sync]
@@ -20,6 +21,8 @@
     ;; the logs come out of IndexedDB first (async)
     (.then (store/load!) (fn []
   (sync/start!)                     ; graphs kept by the server: local-first sync (wiki/Graph-Sync.md)
+  ;; local mode: the projection in SQLite, in the one tab holding it (wiki/Graph-Store.md)
+  (when-not sync/enabled? (graph-local/start!))
   (vectors/load!)
   (chat/restore!)
   (mrg/refresh!)                    ; merge files waiting for the open graph
