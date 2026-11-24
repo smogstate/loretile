@@ -371,7 +371,16 @@
                (str file " " (:id course) " target " cid " @" level))))
        (testing "every concept is grounded in a source"
          (is (every? (fn [id] (some #(and (= id (:from %)) (= :grounded-in (:type %))) (:edges kg)))
-                     (keys (:concepts kg)))))))))
+                     (keys (:concepts kg)))))
+       ;; wiki/Graph-Store.md § The delta fold: an edge IS its [from type to] —
+       ;; the old fold kept a second `grounded-in` beside one already there
+       (testing "an edge key is held once"
+         (is (= (count (:edges kg)) (count (set (map (juxt :from :type :to) (:edges kg)))))))
+       (testing "the delta, read through a reader, is the fold: every event re-folded from its delta"
+         (let [half (f/kg (take (quot (count evs) 2) evs))]
+           (doseq [e (drop (quot (count evs) 2) evs)]
+             (is (= (f/guard half e) (f/guard-with (f/map-reader half) e))))
+           (is (= kg (reduce #(f/apply-delta %1 (f/delta (f/map-reader %1) %2)) half (drop (quot (count evs) 2) evs))))))))))
 
 ;; --- publish and pin (wiki/Data-Model.md) ------------------------------------
 ;; A published version is a CUT in the log, not a copy: a learner pinned at
