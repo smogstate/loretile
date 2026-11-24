@@ -22,7 +22,7 @@
     (vec (take-while some? (repeatedly #(edn/read {:eof nil} r))))))
 
 (defn- comparable [kg]
-  (into {} (remove (fn [[k v]] (or (nil? v) (= k :loretile.fold/eidx)))) kg))
+  (into {} (remove (fn [[k v]] (or (nil? v) (#{:loretile.fold/eidx :loretile.fold/nbr} k)))) kg))
 
 (defn- temp-db []
   (let [f (File/createTempFile "projection-test" ".sqlite3")]

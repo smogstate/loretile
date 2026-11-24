@@ -54,7 +54,7 @@ J ?= 8
 checks:
 	@mkdir -p out/checks
 	@curl -sf -o /dev/null http://localhost:8291/ || { echo "serve public/ on :8291 first"; exit 1; }
-	@ls test/*-check.js | grep -v -e i18n-check -e mcp-check -e landing-check -e store-proof-check \
+	@ls test/*-check.js | grep -v -e i18n-check -e mcp-check -e landing-check -e store-proof-check -e scale40k-check \
 	  | xargs -P $(J) -I{} sh -c 'n=$$(basename {} -check.js); if CLJ_CONFIG=$$(mktemp -d) timeout 600 node {} > out/checks/$$n.log 2>&1; then echo "OK   $$n"; else echo "FAIL $$n"; fi' \
 	  | tee out/checks/summary.txt
 	@! grep -q FAIL out/checks/summary.txt

@@ -195,14 +195,22 @@
 (defonce layout-mode (r/atom (if (= "free" (try (.getItem js/localStorage layout-key) (catch :default _ nil))) :free :layers)))
 (def ^:private col-w 200)
 
+(defonce ^:private depths-cache (atom [nil nil]))
+
 (defn- depths
   "id -> length of its longest :requires chain down to a foundation (0 = needs
    nothing). The fold refuses cycles; `seen` guards anyway."
   [kg ids]
   (let [ord (profile/ordering-relation (fold/profile kg))
-        req (reduce (fn [m {:keys [from to type]}] (if (= ord type) (update m from (fnil conj []) to) m))
-                    {} (:edges kg))
-        memo (atom {})]
+        ;; kept per edge set: depths only change when an edge does
+        [k cached] @depths-cache
+        {:keys [req memo]} (if (= k [(:edges kg) ord])
+                             cached
+                             (let [c {:req (reduce (fn [m {:keys [from to type]}] (if (= ord type) (update m from (fnil conj []) to) m))
+                                                   {} (:edges kg))
+                                      :memo (atom {})}]
+                               (reset! depths-cache [[(:edges kg) ord] c])
+                               c))]
     (letfn [(d [id seen]
               (or (@memo id)
                   (let [v (if (seen id) 0
@@ -257,6 +265,8 @@
   [^js m k & [v]]
   (fn [el] (if el (.set m k (if v (to-array (cons el v)) el)) (.delete m k)) nil))
 
+(declare hood big? edges-among)
+
 (defn- build-sim!
   "(Re)build the simulation when the node/edge signature changes; keep
    surviving nodes at their old spots so the graph doesn't reshuffle.
@@ -264,18 +274,21 @@
    ponytail: one svg element per node and edge — past ~1000 nodes a canvas
    or level-of-detail culling is the next step."
   [kg w h]
-  (let [ids (concat (keys (:concepts kg))
+  (let [ids (concat (or (:ids (hood kg)) (keys (:concepts kg)))
                     (map key (filter #(= :concept (:of (val %))) (:proposals kg))))
-        links (->> (:edges kg)
-                   (remove #(= :grounded-in (:type %)))
-                   (filter #(and (some #{(:from %)} ids) (some #{(:to %)} ids))))
+        in? (set ids)
+        links (if (big? kg)
+                (edges-among kg in?)
+                (->> (:edges kg)
+                     (remove #(= :grounded-in (:type %)))
+                     (filter #(and (in? (:from %)) (in? (:to %))))))
         sig [(set ids) (set (map (juxt :from :to :type) links)) @layout-mode (boolean (some #(= (profile/ordering-relation (fold/profile kg)) (:type %)) (:edges kg)))]
         ;; layers only where there is something to column by: a graph with no
         ;; ordering relation (any ontology graph, a fresh data graph) is free
         ;; physics — one column of piled nodes hid every link (UX 2026-11-19)
         ord (profile/ordering-relation (fold/profile kg))
         layers? (and (= :layers @layout-mode) (some #(= ord (:type %)) (:edges kg)))
-        dep (when layers? (depths kg (keys (:concepts kg))))
+        dep (when layers? (depths kg (filter (:concepts kg) ids)))
         maxd (apply max 0 (vals dep))
         col-x (fn [id] (when-let [d (get dep id)] (+ (/ w 2) (* (- d (/ maxd 2)) col-w))))]
     (when (not= sig (:sig @sim-state))
@@ -636,11 +649,62 @@
 
 (defonce ego-mode (r/atom false))
 
+(defonce ^:private adjacency-cache (atom [nil nil]))
+
 (defn- adjacency
-  "id -> neighbour set over every edge but grounded-in, both directions."
+  "id -> neighbour set over every edge but grounded-in, both directions.
+   Kept for the last graph value: the big map asks on every render."
   [kg]
-  (reduce (fn [m {:keys [from to]}] (-> m (update from (fnil conj #{}) to) (update to (fnil conj #{}) from)))
-          {} (remove #(= :grounded-in (:type %)) (:edges kg))))
+  (let [[k v] @adjacency-cache]
+    (if (identical? k (:edges kg))
+      v
+      (let [v (persistent!
+               (reduce (fn [m {:keys [from to]}] (-> m (assoc! from (conj (get m from #{}) to)) (assoc! to (conj (get m to #{}) from))))
+                       (transient {}) (remove #(= :grounded-in (:type %)) (:edges kg))))]
+        (reset! adjacency-cache [(:edges kg) v])
+        v))))
+
+(defn- edges-among
+  "The edges (but grounded-in) between topics of the set `shown` — off the
+   fold's per-node index, never a scan of every edge."
+  [kg shown]
+  (distinct (for [id shown, e (fold/edges-at kg id)
+                  :when (and (not= :grounded-in (:type e)) (shown (:from e)) (shown (:to e)))]
+              e)))
+
+;; --- a big graph's map: a neighbourhood (wiki/Graph-Store.md, wiki/UX.md «no
+;; global hairball») — past `big-at` topics the map shows one topic and what
+;; lies 1–2 links away, nearest first, at most `hood-cap`; tapping a topic
+;; re-centres it, the palette jumps anywhere. Below, the whole graph as ever.
+(def ^:private big-at 500)
+(def ^:private hood-cap 300)
+(defonce ^:private hood-centre (atom nil))
+
+(declare focus-root)
+
+(defn- big? [kg] (> (count (:concepts kg)) big-at))
+
+(defn- hood
+  "{:centre id :ids [id …]} of a big graph's map, or nil for a small one."
+  [kg]
+  (when (big? kg)
+    (let [known? #(contains? (:concepts kg) %)
+          sel (focus-root)
+          _ (when (known? sel) (reset! hood-centre sel))
+          centre (if (known? @hood-centre)
+                   @hood-centre
+                   ;; nothing chosen yet: where work last happened
+                   (:id (apply max-key #(or (:changed-at %) 0) (vals (:concepts kg)))))
+          ;; neighbours off the fold's per-node index (no whole-graph pass)
+          adj (fn [id _] (keep #(when (not= :grounded-in (:type %)) (if (= id (:from %)) (:to %) (:from %)))
+                               (fold/edges-at kg id)))]
+      ;; 1–2 links out; further while the map would show fewer than 40
+      (loop [out [centre] seen #{centre} frontier [centre] d 0]
+        (if (or (and (>= d 2) (>= (count out) 40)) (empty? frontier) (>= (count out) hood-cap))
+          {:centre centre :ids (vec (take hood-cap out))}
+          (let [nxt (->> frontier (mapcat #(sort (adj % #{}))) (remove seen) distinct
+                         (filter known?) (take (- hood-cap (count out))) vec)]
+            (recur (into out nxt) (into seen nxt) nxt (inc d))))))))
 
 (defn- bfs-rings
   "id -> hop distance from root; unreachable ids get (inc max-found)."
@@ -904,6 +968,10 @@
       ;; graph describing types defaults to the blueprint look
       [:div.map-wrap {:class (str "scheme-" (color-scheme kg))}
        [:div.map-tools [legend-btn] [layout-btn] [fullscreen-btn] [asof-btn] [filter-btn] [merge-badge]]
+       ;; a big graph says what part of it the map shows, and how to move
+       (when-let [{:keys [centre ids]} (hood kg)]
+         [:div.hood-note (t :ui/hood-note {"{n}" (count ids) "{m}" (count (:concepts kg))
+                                           "{title}" (get-in kg [:concepts centre :title])})])
        ;; the past is for looking at: no tools that write
        (when (nil? @store/as-of) [rail])
        (if (and (empty? (:concepts kg)) (empty? (:proposals kg)))
@@ -947,19 +1015,24 @@
           @positions   ; deref: a publish re-renders (a tick only moves elements — draw-live!)
           (let [focus (or (ego-focus kg) (course-focus kg))
                 lit (or (:ids focus) (some-> (:closure focus) set))
-                marks (chat/pending-marks)]
+                marks (chat/pending-marks)
+                ;; a big graph: only the neighbourhood is drawn
+                shown (some-> (hood kg) :ids set)
+                edges (if shown
+                        (edges-among kg shown)
+                        (remove #(= :grounded-in (:type %)) (:edges kg)))]
             [:<>
-             (for [e (remove #(= :grounded-in (:type %)) (:edges kg))]
+             (for [e edges]
                ^{:key (str e)} [edge-line e (and lit (not (and (lit (:from e)) (lit (:to e)))))
                                 (not (profile/learning? (fold/profile kg)))])
              ;; outside learning the relations ARE the content: name them on the map
              (when-not (profile/learning? (fold/profile kg))
-               (for [e (remove #(= :grounded-in (:type %)) (:edges kg))]
+               (for [e edges]
                  ^{:key (str "lbl" e)} [edge-text e (edge-label kg (:type e))]))
              ;; a proposed link, dashed like a ghost topic (a merge file's or the chat's)
              (for [[k p] (:proposals kg) :when (= :edge (:of p))]
                ^{:key (str k)} [edge-line (assoc p :ghost? true) false])
-             (for [id (keys (:concepts kg))] ^{:key id} [node kg id focus (get marks id)])
+             (for [id (if shown (filter shown (keys (:concepts kg))) (keys (:concepts kg)))] ^{:key id} [node kg id focus (get marks id)])
              ;; the selected node's whole title, drawn on top of its neighbours'
              ;; labels — re-ordering the nodes instead moved the tapped one mid-tap
              ;; and swallowed the click that completes a link
@@ -2229,6 +2302,8 @@
 
 (declare author-palette)
 
+(declare topic-rows)
+
 (defn palette-actions [kg]
   (if (#{:catalog :learn} (:view @route))
     (learner-palette kg)
@@ -2279,11 +2354,24 @@
       :hint (when (= k (:preset (llm/config))) (t :ui/current-hint))
       :run #(do (llm/save-config! (merge (llm/config) v {:preset k}))
                 (snack! (t :ui/model-label {"{label}" (:label v)})))})
-   (for [[id c] (:concepts kg)]
-     {:label (:title c) :icon :notes :hint (t :ui/topic-lower)
-      ;; a node is found by its properties too (2026-11-20)
-      :props (vec (for [[k v] (fold/node-props c)] (str (name k) ": " v)))
-      :run #(goto! (str "#/c/" id))})))
+   (topic-rows kg)))
+
+;; every topic as a palette row, built once per graph value — rebuilt per
+;; keystroke it cost seconds at 40k topics
+(defonce ^:private topic-rows-cache (atom [nil nil]))
+
+(defn- topic-rows [kg]
+  (let [[k v] @topic-rows-cache]
+    (if (identical? k (:concepts kg))
+      v
+      (let [v (vec (for [[id c] (:concepts kg)
+                         :let [props (vec (for [[pk pv] (fold/node-props c)] (str (name pk) ": " pv)))]]
+                     {:label (:title c) :icon :notes :hint (t :ui/topic-lower)
+                      ;; a node is found by its properties too (2026-11-20)
+                      :props props :lc (str/lower-case (str (:title c))) :lprops (mapv str/lower-case props)
+                      :run #(goto! (str "#/c/" id))}))]
+        (reset! topic-rows-cache [(:concepts kg) v])
+        v))))
 
 (defn palette [kg]
   (let [q (r/atom "") sel (r/atom 0)]
@@ -2291,12 +2379,14 @@
       (let [lq (str/lower-case @q)
             ;; a title match, else a property «key: value» that holds the query —
             ;; shown as the row's hint, so the person sees why it matched
-            acts (vec (keep (fn [a]
-                              (cond
-                                (str/includes? (str/lower-case (:label a)) lq) a
-                                (seq lq) (when-let [m (first (filter #(str/includes? (str/lower-case %) lq) (:props a)))]
-                                           (assoc a :hint m))))
-                            (palette-actions kg)))
+            ;; at most the 12 rows shown: the scan stops once it has them
+            acts (vec (take 12 (keep (fn [a]
+                                       (cond
+                                         (str/includes? (or (:lc a) (str/lower-case (:label a))) lq) a
+                                         (seq lq) (when-let [i (first (keep-indexed (fn [i p] (when (str/includes? p lq) i))
+                                                                                    (or (:lprops a) (map str/lower-case (:props a)))))]
+                                                    (assoc a :hint (nth (:props a) i)))))
+                                     (palette-actions kg))))
             run! (fn [a] (reset! palette-open false) ((:run a)))]
         [:div.cmd-scrim {:on-click #(reset! palette-open false)}
          [:div.cmd-palette {:on-click #(.stopPropagation %)}
@@ -2328,9 +2418,15 @@
 
 ;; --- shell -------------------------------------------------------------------
 
+(defonce ^:private tracker-cache (atom [nil nil]))
+
 (defn tracker [kg]
   (let [ids (keys (:concepts kg))
-        ready (count (filter #(and (fold/publishable? kg %) (not (fold/stale? kg %))) ids))]
+        ;; counted once per graph value: per render it cost 0.7 s at 40k topics
+        ready (let [[k v] @tracker-cache]
+                (if (identical? k kg) v
+                    (let [v (count (filter #(and (fold/publishable? kg %) (not (fold/stale? kg %))) ids))]
+                      (reset! tracker-cache [kg v]) v)))]
     (r/with-let [open (r/atom false)]
       (let [missing (sort-by :title (keep #(when-not (and (fold/publishable? kg %) (not (fold/stale? kg %)))
                                               (get-in kg [:concepts %])) ids))]
@@ -3073,10 +3169,18 @@
 ;; the map's property filter: {:k key :v value} or nil — a view, never saved
 (defonce prop-filter (r/atom nil))
 
+(defonce ^:private prop-keys-cache (atom [nil nil]))
+
 (defn- prop-keys
-  "Every free property key the graph's nodes carry, sorted."
+  "Every free property key the graph's nodes carry, sorted — kept per topics
+   value (the filter button asks on every render)."
   [kg]
-  (sort-by name (distinct (mapcat (comp (partial map key) fold/node-props) (vals (:concepts kg))))))
+  (let [[k v] @prop-keys-cache]
+    (if (identical? k (:concepts kg))
+      v
+      (let [v (sort-by name (distinct (mapcat (comp (partial map key) fold/node-props) (vals (:concepts kg)))))]
+        (reset! prop-keys-cache [(:concepts kg) v])
+        v))))
 
 (defn- filter-btn
   "Dim every node whose property is not the chosen value (2026-11-20).

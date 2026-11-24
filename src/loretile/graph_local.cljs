@@ -21,7 +21,7 @@
 (defonce ^:private calls (atom {}))      ; request id → [resolve reject]
 (defonce ^:private next-id (atom 0))
 (defonce ready (atom false))              ; this tab holds the store and it is open
-(defonce ^:private synced (atom {}))      ; graph id → {:evs log :kg kg}: what the rows hold
+(defonce ^:private synced (atom {}))      ; graph id → {:evs log}: what the rows hold
 (defonce ^:private chain (atom (p/resolved nil)))   ; syncs run one after another
 (defonce last-sync (atom nil))           ; {:graph :mode :events :ms} — what the checks read
 
@@ -48,24 +48,57 @@
        :discarded (clj->js (:discarded ch))
        :heads (some-> (:heads ch) pr-str)})
 
-(defn- project!
-  "Fold `evs` from index `from` (the rows already hold the graph `k` of the
-   events before it) into row changes, written in batches. Resolves to the
-   graph after the last event."
-  [gid k evs from]
-  (let [batch 2000]
-    (p/loop [k k i from]
-      (if (>= i (count evs))
-        k
-        (let [end (min (count evs) (+ i batch))
-              [k' out] (reduce (fn [[k out] j]
-                                 (let [e (nth evs j)
-                                       d (fold/delta (fold/map-reader k) e)
-                                       ch (gs/changes d (select-keys k gs/head-keys) (inc j))]
-                                   [(fold/apply-delta k d) (doto out (.push (js-changes ch e)))]))
-                               [k #js []] (range i end))]
-          (p/do (call :apply {:graph gid :changes out :fold build-fold})
-                (p/recur k' end)))))))
+(defn- yield! [] (p/create (fn [ok _] (js/setTimeout ok 0))))
+
+(defn- rebuild!
+  "Fold all of `evs` into row changes, from nothing, in slices of ~25 ms that
+   give the page back in between (a rebuild of 130k events is long; the
+   screens must not wait for it). The graph it folds is thrown away after —
+   the page keeps one graph, the store's."
+  [gid evs]
+  (p/loop [k fold/empty-kg i 0]
+    (if (>= i (count evs))
+      true
+      (let [t0 (js/performance.now)
+            out #js []
+            [k' j] (loop [k k j i]
+                     (if (or (>= j (count evs)) (> (- (js/performance.now) t0) 25) (>= (.-length out) 2000))
+                       [k j]
+                       (let [e (nth evs j)
+                             d (fold/delta (fold/map-reader k) e)]
+                         (.push out (js-changes (gs/changes d (select-keys k gs/head-keys) (inc j)) e))
+                         (recur (fold/apply-delta k d) (inc j)))))]
+        (p/do (call :apply {:graph gid :changes out :fold build-fold})
+              (yield!)
+              (p/recur k' j))))))
+
+(defn- appended!
+  "The events of `evs` from `from` were just appended to the open graph: the
+   store's incremental fold computed their deltas (`store/recent-deltas`);
+   write them as rows. false when it has not (another graph, a past view) —
+   the caller rebuilds."
+  [gid evs from]
+  (when (and (= gid @store/current) (nil? @store/as-of) (identical? evs @store/events))
+    (store/kg)                                   ; folds the new events, recording their deltas
+    (let [{g :graph items :items} @store/recent-deltas
+          fresh (subvec evs from)]
+      (when (and (= g gid) (= (count items) (count fresh))
+                 (every? true? (map #(identical? (first %1) %2) items fresh)))
+        (call :apply {:graph gid :fold build-fold
+                      :changes (to-array (map-indexed (fn [i [e d h]] (js-changes (gs/changes d h (+ from i 1)) e)) items))})))))
+
+(defn- appended-by-fold!
+  "The log grew, but not by this page's own append (another tab's edit, a
+   reload): fold up to what the rows hold, then write only the new events —
+   one fold, not a rebuild."
+  [gid evs from]
+  (let [k (fold/kg (subvec evs 0 from))
+        [_ out] (reduce (fn [[k out] j]
+                          (let [e (nth evs j)
+                                d (fold/delta (fold/map-reader k) e)]
+                            [(fold/apply-delta k d) (doto out (.push (js-changes (gs/changes d (select-keys k gs/head-keys) (inc j)) e)))]))
+                        [k #js []] (range from (count evs)))]
+    (call :apply {:graph gid :changes out :fold build-fold})))
 
 (defn- sync-graph!
   "Bring graph `gid`'s rows to log `evs`: nothing when they hold it, the new
@@ -75,21 +108,14 @@
         n (count evs)]
     (p/let [^js h (call :head {:graph gid})
             seq-n (if h (.-seq h) 0)
-            prev (get @synced gid)
             same-prefix? (and h (= build-fold (.-fold h)) (<= seq-n n)
                               (or (zero? seq-n) (= (.-lastId h) (:ev/id (nth evs (dec seq-n))))))
             mode (cond (and same-prefix? (= seq-n n)) :current
-                       same-prefix? :append
+                       (and same-prefix? (appended! gid evs seq-n)) :append
+                       same-prefix? (p/do (appended-by-fold! gid evs seq-n) :append)
                        :else :rebuild)
-            _ (when (= :rebuild mode) (call :clear {:graph gid}))
-            ;; the graph the rows hold: folded already, or folded now — not at
-            ;; boot when nothing changed (it is needed only for the next append)
-            held (when (and prev (:kg prev) (= seq-n (count (:evs prev)))) (:kg prev))
-            k (case mode
-                :current held
-                :append (project! gid (or held (fold/kg (subvec evs 0 seq-n))) evs seq-n)
-                :rebuild (project! gid fold/empty-kg evs 0))]
-      (swap! synced assoc gid {:evs evs :kg (or k (when (= evs @store/events) (when-not @store/as-of (store/kg))))})
+            _ (when (= :rebuild mode) (p/do (call :clear {:graph gid}) (rebuild! gid evs)))]
+      (swap! synced assoc gid {:evs evs})
       (reset! last-sync {:graph gid :mode mode :events (- n (if (= :rebuild mode) 0 seq-n))
                          :ms (js/Math.round (- (js/performance.now) t0))})
       mode)))
@@ -123,7 +149,7 @@
     (let [rows {:nodes (js->clj (.-nodes d)) :edges (js->clj (.-edges d))
                 :discarded (js->clj (.-discarded d))
                 :heads (some-> (.-heads d) cljs.reader/read-string)}
-          norm (fn [kg] (into {} (remove (fn [[k v]] (or (nil? v) (= k ::fold/eidx)))) kg))
+          norm (fn [kg] (into {} (remove (fn [[k v]] (or (nil? v) (#{::fold/eidx ::fold/nbr} k)))) kg))
           a (norm (gs/rows->kg rows))
           b (norm (fold/kg (store/graph-events gid)))]
       {:equal (= a b)

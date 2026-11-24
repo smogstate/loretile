@@ -68,13 +68,30 @@
     (sequential? x) (mapv decode x)
     :else x))
 
+#?(:cljs
+   (defn decode-js
+     "A parsed JSON value (JS objects, as JSON.parse gives) → the EDN it was,
+      in one pass — `decode` after js->clj walks everything twice (a 40k-topic
+      log loads at boot: every event goes through here)."
+     [x]
+     (cond
+       (string? x) (cond (str/starts-with? x "'") (subs x 1)
+                         (str/starts-with? x ":") (str-key (subs x 1))
+                         :else x)
+       (array? x) (persistent! (reduce (fn [v y] (conj! v (decode-js y))) (transient []) x))
+       (object? x) (cond (.hasOwnProperty x "#set") (set (map decode-js (aget x "#set")))
+                         (.hasOwnProperty x "#map") (into {} (map (fn [[k v]] [(decode-js k) (decode-js v)])) (aget x "#map"))
+                         :else (persistent! (reduce (fn [m k] (assoc! m (if (str/starts-with? k "'") (subs k 1) (str-key k)) (decode-js (aget x k))))
+                                                    (transient {}) (js-keys x))))
+       :else x)))
+
 (defn ->json [x]
   #?(:cljs (js/JSON.stringify (clj->js (encode x)))
      :clj (json/write-str (encode x))))
 
 (defn <-json [s]
   (when s
-    #?(:cljs (decode (js->clj (js/JSON.parse s)))
+    #?(:cljs (decode-js (js/JSON.parse s))
        :clj (decode (json/read-str s)))))
 
 ;; --- a node or an edge as a row ----------------------------------------------------

@@ -9,6 +9,7 @@
             [reagent.core :as r]
             [loretile.agent-md :as export]
             [loretile.fold :as fold]
+            [loretile.graph-store :as gs]
             [loretile.ops :as ops]
             [loretile.profile :as profile]
             [loretile.rdf :as rdf]
@@ -49,10 +50,41 @@
 (defonce as-of (r/atom nil))
 
 (defonce ^:private kg-cache (atom [nil nil nil]))
+(defn- grew?
+  "Is `new` the log `old` with events appended — the same events, by
+   identity, in front? (A persistent vector conj keeps them.)"
+  [old new]
+  (and old (< (count old) (count new))
+       (let [n (count old)] (and (pos? n) (identical? (nth old (dec n)) (nth new (dec n)))
+                                 (identical? (nth old 0) (nth new 0))))))
+
+;; the deltas of the events the incremental fold just applied, by event — the
+;; browser's projection (graph_local) writes them as rows instead of folding
+;; a second copy of the graph: {:graph id :items [[event delta heads-before] …]}
+(defonce recent-deltas (atom nil))
+(defonce ^:private befores (atom nil))   ; {:graph id :by [[event kg-before] …]} — the last 50 appends
+
 (defn kg []
   (let [evs @events at @as-of [k a v] @kg-cache]
-    (if (and (identical? k evs) (= a at))
-      v
+    (cond
+      (and (identical? k evs) (= a at)) v
+      ;; an append (wiki/Graph-Store.md): fold only the new events onto the
+      ;; graph already folded — a whole refold per edit took seconds at 40k
+      (and (nil? at) (nil? a) (grew? k evs))
+      (let [[v items] (reduce (fn [[g items] e]
+                                (let [d (fold/delta (fold/map-reader g) e)]
+                                  ;; [event delta heads-before graph-before]
+                                  [(fold/apply-delta g d) (conj items [e d (select-keys g [:graph :profile :ontology :ontology-graph? :authors :owner]) g])]))
+                              [v []] (subvec evs (count k)))]
+        (reset! recent-deltas {:graph @current :items (mapv #(subvec % 0 3) items)})
+        ;; the graph just before each of the last 50 edits — what undo reads
+        ;; (refolding the log up to the event took seconds at 40k)
+        (swap! befores (fn [m] {:graph @current
+                                :by (vec (take-last 50 (into (if (= (:graph m) @current) (:by m) [])
+                                                             (map (fn [[e _ _ g]] [e g]) items))))}))
+        (reset! kg-cache [evs at v])
+        v)
+      :else
       (let [v (fold/kg (fold/events-as-of evs at))] (reset! kg-cache [evs at v]) v))))
 
 (defn locale-for-new
@@ -103,6 +135,7 @@
 ;; what "events" holds per graph: [count last-id] — a save of a log that only
 ;; grew writes the new events; any other log is rewritten whole
 (defonce ^:private saved (atom {}))
+(declare read-event)
 
 (defn- idb-read
   "Promise of {graph id → log}: every log, or just `gid`'s — the per-event
@@ -124,14 +157,24 @@
               (fn []
                 (let [per (reduce (fn [m [k v]]
                                     (let [g (aget k 0)]
-                                      (update m g (fnil conj []) (try (reader/read-string v) (catch :default _ nil)))))
+                                      (update m g (fnil conj []) (try (read-event v) (catch :default _ nil)))))
                                   {} (map vector (.-result eks) (.-result evs)))
                       per (into {} (map (fn [[g es]] [g (vec (remove nil? es))])) per)
                       legacy (into {} (keep (fn [[k v]] (when-not (contains? per k)
                                                           [k (try (reader/read-string v) (catch :default _ []))])))
                                    (map vector (.-result lks) (.-result lvs)))]
                   (doseq [[g es] per] (swap! saved assoc g [(count es) (:ev/id (peek es))]))
-                  (ok (with-meta (merge per legacy) {:legacy (set (keys legacy))}))))))))))
+                  ;; graphs still holding EDN records: rewritten as JSON once, after boot
+                  (ok (with-meta (merge per legacy)
+                        {:legacy (set (keys legacy))
+                         :edn (set (keep (fn [[k v]] (when-not (str/starts-with? v "{\"") (aget k 0)))
+                                         (map vector (.-result eks) (.-result evs))))}))))))))))
+
+(defn- read-event
+  "One stored event: tagged JSON (since 2026-11-24 — parsed natively, ~2.5×
+   faster than EDN at boot for a 40k-topic log), or EDN written before."
+  [s]
+  (if (str/starts-with? s "{\"") (gs/<-json s) (reader/read-string s)))
 
 (defn- write-log!
   "Into transaction `tx`: graph `gid`'s log `evs` — only the events past what
@@ -143,7 +186,7 @@
         from (if grew? n 0)]
     (when-not grew? (.delete st (graph-range gid)))
     (doseq [i (range from (count evs))]
-      (.put st (pr-str (nth evs i)) #js [gid i]))
+      (.put st (gs/->json (nth evs i)) #js [gid i]))
     (.delete (.objectStore tx "logs") gid)
     (swap! saved assoc gid [(count evs) (some-> (peek evs) :ev/id)])))
 
@@ -260,6 +303,10 @@
                      (.then (constantly (merge stored logs))))))
         (.catch (fn [_] (reset! last-error {:error :storage-full :detail "indexeddb"}) logs))
         (.then (fn [all]
+                 ;; logs stored as EDN (before 2026-11-24): rewritten as tagged JSON
+                 ;; once the app is up — the next boot parses natively
+                 (when-let [edn (seq (:edn (meta all)))]
+                   (js/setTimeout #(-> (idb-put-all (select-keys all edn)) (.catch (fn [_] nil))) 3000))
                  (let [old (into {} (filter (comp old-format? val)) all)
                        all (apply dissoc all (keys old))]
                    (when (seq old)
@@ -765,7 +812,10 @@
   (let [evs @events
         i (first (keep-indexed #(when (= id (:ev/id %2)) %1) evs))]
     (when i
-      (when-let [ops (fold/undo-ops (fold/kg (subvec evs 0 i)) (nth evs i))]
+      (when-let [ops (fold/undo-ops (or (when (= (:graph @befores) @current)
+                                          (some (fn [[e g]] (when (identical? e (nth evs i)) g)) (:by @befores)))
+                                        (fold/kg (subvec evs 0 i)))
+                                    (nth evs i))]
         (reset! replaying? true)
         (let [err (try (append! {:ev/type :change :ops ops}) (finally (reset! replaying? false)))]
           (when (nil? err) (:ev/id (peek @events))))))))

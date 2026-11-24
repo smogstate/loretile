@@ -828,3 +828,9 @@ select.node-type { margin-bottom: 8px; }
 .start-targets li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; max-width: 560px; padding: 2px 0; }
 .start-targets .lvl { font-size: 13px; white-space: nowrap; }
 .restart-confirm { margin: 6px 0 10px; }
+
+/* a big graph's map shows a neighbourhood: say which (wiki/Graph-Store.md) */
+.hood-note { position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 4;
+  max-width: min(640px, calc(100% - 32px)); padding: 6px 12px; border-radius: 10px;
+  background: var(--panel, rgba(255,255,255,.92)); color: var(--muted, #666); font-size: 13px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.12); pointer-events: none; text-align: center; }

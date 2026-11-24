@@ -192,6 +192,22 @@
 
 (defn- touching? [id x] (or (= id (:from x)) (= id (:to x))))
 
+(defn- neighbour-index
+  "{node id → #{[from to type] …}}: the keys of the edges touching each node —
+   kept by `apply-delta` as ::nbr; built when a kg came from elsewhere."
+  [kg]
+  (or (::nbr kg)
+      (reduce (fn [m e] (let [k (edge-key e)]
+                          (-> m (update (:from e) (fnil conj #{}) k) (update (:to e) (fnil conj #{}) k))))
+              {} (:edges kg))))
+
+(defn edges-at
+  "The edges touching node `id` — from the index, never a scan: what a big
+   graph's map walks (its neighbourhood, the links among what it shows)."
+  [kg id]
+  (let [idx (edge-index kg)]
+    (keep idx (get (neighbour-index kg) id))))
+
 (defrecord MapReader [kg]
   Reader
   (heads [_] (select-keys kg [:graph :profile :ontology :ontology-graph? :authors :owner]))
@@ -442,11 +458,15 @@
                           (if n (assoc-in kg [at id] n) (update kg at dissoc id))))
                       kg nodes)
         kg (if (seq edges)
-             (loop [es (:edges kg) idx (edge-index kg) [[k e] & more :as ds] (seq edges)]
+             (loop [es (:edges kg) idx (edge-index kg) nbr (neighbour-index kg) [[k e] & more :as ds] (seq edges)]
                (if (seq ds)
-                 (let [old (get idx k)]
-                   (recur (cond-> es old (disj old) e (conj e)) (if e (assoc idx k e) (dissoc idx k)) more))
-                 (assoc kg :edges es ::eidx idx)))
+                 (let [old (get idx k)
+                       [from to] k
+                       nbr (cond (and e (not old)) (-> nbr (update from (fnil conj #{}) k) (update to (fnil conj #{}) k))
+                                 (and old (not e)) (-> nbr (update from disj k) (update to disj k))
+                                 :else nbr)]
+                   (recur (cond-> es old (disj old) e (conj e)) (if e (assoc idx k e) (dissoc idx k)) nbr more))
+                 (assoc kg :edges es ::eidx idx ::nbr nbr)))
              kg)
         kg (reduce-kv (fn [kg k p] (if p (assoc-in kg [:proposals k] p) (update kg :proposals dissoc k))) kg props)
         kg (reduce-kv (fn [kg l v] (update kg :object-links (fnil (if v conj disj) #{}) l)) kg links)]
@@ -909,8 +929,23 @@
 ;; ---------------------------------------------------------------------------
 ;; projections
 
-(defn concept-objects [kg id] (sort-by :id (filter #(and (= id (:concept-id %)) (= :active (:status %)))
-                                                   (vals (:objects kg)))))
+;; a topic's ACTIVE material, indexed once per graph value: the map, the
+;; tracker and the course panel ask per topic, and each ask scanned every
+;; object and item — N topics × all material (2000 topics: 5 s a render)
+(defonce ^:private material-cache (atom []))   ; [[kg index] …] — the last few graph values
+
+(defn- material-index [kg]
+  (or (some (fn [[k idx]] (when (identical? k kg) idx)) @material-cache)
+      (let [by (fn [m f] (persistent! (reduce (fn [acc x] (if (= :active (:status x))
+                                                            (assoc! acc (f x) (conj (get acc (f x) []) x))
+                                                            acc))
+                                              (transient {}) (vals m))))
+            idx {:objects (by (:objects kg) :concept-id) :items (by (:items kg) :primary-concept-id)}]
+        ;; ponytail: four graph values remembered — the open graph, a learner's cut, a probe
+        (swap! material-cache #(vec (take 4 (cons [kg idx] %))))
+        idx)))
+
+(defn concept-objects [kg id] (sort-by :id (get-in (material-index kg) [:objects id])))
 (defn content-locale
   "The language this graph's content is written in: the most common locale
    among its items, objects and courses; nil for a graph with none. New
@@ -1015,14 +1050,15 @@
 (defn concept-items
   ;; sorted: (:items kg) is a hash map, whose order shuffles as it grows
   [kg id]
-  (sort-by :id (filter #(and (= id (:primary-concept-id %)) (= :active (:status %)))
-                       (vals (:items kg)))))
+  (sort-by :id (get-in (material-index kg) [:items id])))
 
 (defn publishable?
   "Minimum viable node: 1 active object + 3 active items (wiki/Authoring.md)."
   [kg id]
-  (and (>= (count (concept-objects kg id)) 1)
-       (>= (count (concept-items kg id)) 3)))
+  ;; counted off the index, unsorted: the tracker asks for every topic
+  (let [idx (material-index kg)]
+    (and (>= (count (get-in idx [:objects id])) 1)
+         (>= (count (get-in idx [:items id])) 3))))
 
 (defn publishable-at?
   "Minimum viable node AT a level (and locale, when given) — what a course
@@ -1038,8 +1074,7 @@
    objects is — a demoted object no longer speaks for it."
   [kg id]
   (boolean (or (get-in kg [:concepts id :stale?])
-               (some #(and (= id (:concept-id %)) (= :active (:status %)) (:stale? %))
-                     (vals (:objects kg))))))
+               (some :stale? (get-in (material-index kg) [:objects id])))))
 
 (defn- target-readiness
   "{:concept :level :ready? :stale?} — a stale topic is not ready: a course
