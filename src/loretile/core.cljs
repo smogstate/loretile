@@ -20,9 +20,14 @@
     (set! (.. js/document -body -textContent) "Loretile cannot run inside a frame.")
     ;; the logs come out of IndexedDB first (async)
     (.then (store/load!) (fn []
-  (sync/start!)                     ; graphs kept by the server: local-first sync (wiki/Graph-Sync.md)
-  ;; local mode: the projection in SQLite, in the one tab holding it (wiki/Graph-Store.md)
-  (when-not sync/enabled? (graph-local/start!))
+  (sync/start!)                     ; graphs kept by the server, edits server-first (wiki/Graph-Store.md)
+  (graph-local/expose!)
+  ;; local mode: the projection in SQLite, in the one tab holding it. A BIG
+  ;; log's first render waits (≤ 4 s) for the graph built from its rows — it
+  ;; replaces a refold of seconds; a small one renders at once (its fold is instant)
+  (.then (let [booting (when-not sync/enabled? (graph-local/start!))]
+           (if (and booting (> (count @store/events) 5000)) booting (js/Promise.resolve nil)))
+         (fn []
   (vectors/load!)
   (chat/restore!)
   (mrg/refresh!)                    ; merge files waiting for the open graph
@@ -33,4 +38,4 @@
   (js/window.addEventListener "hashchange" ui/read-route!)
   (ui/global-keys!)
   (reset! root (rdc/create-root (js/document.getElementById "app")))
-  (rdc/render @root [ui/app])))))
+  (rdc/render @root [ui/app])))))))

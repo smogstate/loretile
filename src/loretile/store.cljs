@@ -87,6 +87,14 @@
       :else
       (let [v (fold/kg (fold/events-as-of evs at))] (reset! kg-cache [evs at v]) v))))
 
+(defn seed-kg!
+  "The open graph's log `evs` folds to `g` — built from the projection's rows
+   at boot (wiki/Graph-Store.md), so the first render does not refold it.
+   Later appends fold on top as usual."
+  [evs g]
+  (boolean (when (and (identical? evs @events) (not (identical? evs (first @kg-cache))))
+             (reset! kg-cache [evs nil g]))))
+
 (defn locale-for-new
   "The locale new content in the open graph is stamped with: the graph's own
    content language, else the interface language (an empty graph)."
@@ -176,14 +184,25 @@
   [s]
   (if (str/starts-with? s "{\"") (gs/<-json s) (reader/read-string s)))
 
+;; a graph's log GENERATION: changed by every whole rewrite (an import, a
+;; replaced log — the same ids may now say other things), never by an append.
+;; The projection stamps it, and rebuilds when it changed (wiki/Graph-Store.md)
+(def ^:private gen-key "loretile-log-gen")
+(defonce ^:private gens (atom (read-ls gen-key {})))
+(defn log-gen [gid] (get @gens gid ""))
+
 (defn- write-log!
   "Into transaction `tx`: graph `gid`'s log `evs` — only the events past what
-   is saved when the log grew, all of it otherwise."
-  [^js tx gid evs]
+   is saved when the log grew, all of it otherwise (a new generation, unless
+   `same-content?`: only the format changes)."
+  [^js tx gid evs & [same-content?]]
   (let [st (.objectStore tx "events")
         [n last-id] (get @saved gid)
         grew? (and n (<= n (count evs)) (or (zero? n) (= last-id (:ev/id (nth evs (dec n))))))
         from (if grew? n 0)]
+    (when-not (or grew? same-content?)
+      (swap! gens assoc gid (str (random-uuid)))
+      (write! gen-key (pr-str @gens)))
     (when-not grew? (.delete st (graph-range gid)))
     (doseq [i (range from (count evs))]
       (.put st (gs/->json (nth evs i)) #js [gid i]))
@@ -212,11 +231,11 @@
 
 (defn- idb-put-all
   "Promise, resolved once every log of {gid → log} is stored (one transaction)."
-  [logs]
+  [logs & [same-content?]]
   (js/Promise.
    (fn [ok no]
      (let [tx (.transaction @db #js ["events" "logs"] "readwrite")]
-       (doseq [[gid evs] logs] (swap! saved dissoc gid) (write-log! tx gid evs))
+       (doseq [[gid evs] logs] (swap! saved dissoc gid) (write-log! tx gid evs same-content?))
        (set! (.-oncomplete tx) ok)
        (set! (.-onabort tx) #(no (.-error tx)))))))
 
@@ -306,7 +325,7 @@
                  ;; logs stored as EDN (before 2026-11-24): rewritten as tagged JSON
                  ;; once the app is up — the next boot parses natively
                  (when-let [edn (seq (:edn (meta all)))]
-                   (js/setTimeout #(-> (idb-put-all (select-keys all edn)) (.catch (fn [_] nil))) 3000))
+                   (js/setTimeout #(-> (idb-put-all (select-keys all edn) true) (.catch (fn [_] nil))) 20000))
                  (let [old (into {} (filter (comp old-format? val)) all)
                        all (apply dissoc all (keys old))]
                    (when (seq old)

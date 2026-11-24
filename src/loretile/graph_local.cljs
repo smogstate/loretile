@@ -14,7 +14,10 @@
             [loretile.graph-store :as gs]
             [loretile.store :as store]))
 
-(def ^:private build-fold (fold-hash))
+(def ^:private fold-src (fold-hash))
+;; what the rows were folded by AND from: the fold's sources and the log's
+;; generation (a whole rewrite of the log, same ids or not, means a rebuild)
+(defn- build-fold-of [gid] (str fold-src "|" (store/log-gen gid)))
 (def ^:private lock-name "loretile-graph-store")
 
 (defonce ^:private worker (atom nil))
@@ -23,7 +26,8 @@
 (defonce ready (atom false))              ; this tab holds the store and it is open
 (defonce ^:private synced (atom {}))      ; graph id → {:evs log}: what the rows hold
 (defonce ^:private chain (atom (p/resolved nil)))   ; syncs run one after another
-(defonce last-sync (atom nil))           ; {:graph :mode :events :ms} — what the checks read
+(defonce last-sync (atom nil))
+(defonce ^:private started-at (js/performance.now))           ; {:graph :mode :events :ms} — what the checks read
 
 (defn- call [op args]
   (if-let [^js w @worker]
@@ -68,7 +72,7 @@
                              d (fold/delta (fold/map-reader k) e)]
                          (.push out (js-changes (gs/changes d (select-keys k gs/head-keys) (inc j)) e))
                          (recur (fold/apply-delta k d) (inc j)))))]
-        (p/do (call :apply {:graph gid :changes out :fold build-fold})
+        (p/do (call :apply {:graph gid :changes out :fold (build-fold-of gid)})
               (yield!)
               (p/recur k' j))))))
 
@@ -84,7 +88,7 @@
           fresh (subvec evs from)]
       (when (and (= g gid) (= (count items) (count fresh))
                  (every? true? (map #(identical? (first %1) %2) items fresh)))
-        (call :apply {:graph gid :fold build-fold
+        (call :apply {:graph gid :fold (build-fold-of gid)
                       :changes (to-array (map-indexed (fn [i [e d h]] (js-changes (gs/changes d h (+ from i 1)) e)) items))})))))
 
 (defn- appended-by-fold!
@@ -98,7 +102,7 @@
                                 d (fold/delta (fold/map-reader k) e)]
                             [(fold/apply-delta k d) (doto out (.push (js-changes (gs/changes d (select-keys k gs/head-keys) (inc j)) e)))]))
                         [k #js []] (range from (count evs)))]
-    (call :apply {:graph gid :changes out :fold build-fold})))
+    (call :apply {:graph gid :changes out :fold (build-fold-of gid)})))
 
 (defn- sync-graph!
   "Bring graph `gid`'s rows to log `evs`: nothing when they hold it, the new
@@ -108,16 +112,23 @@
         n (count evs)]
     (p/let [^js h (call :head {:graph gid})
             seq-n (if h (.-seq h) 0)
-            same-prefix? (and h (= build-fold (.-fold h)) (<= seq-n n)
+            same-prefix? (and h (= (build-fold-of gid) (.-fold h)) (<= seq-n n)
                               (or (zero? seq-n) (= (.-lastId h) (:ev/id (nth evs (dec seq-n))))))
             mode (cond (and same-prefix? (= seq-n n)) :current
                        (and same-prefix? (appended! gid evs seq-n)) :append
                        same-prefix? (p/do (appended-by-fold! gid evs seq-n) :append)
                        :else :rebuild)
-            _ (when (= :rebuild mode) (p/do (call :clear {:graph gid}) (rebuild! gid evs)))]
+            ;; a rebuild right after boot waits for the page to settle: the first
+            ;; seconds are when a person starts working (a single huge event
+            ;; cannot be sliced); meanwhile search uses the in-memory graph
+            _ (when (= :rebuild mode)
+                (p/do (p/delay (max 0 (- 5000 (- (js/performance.now) started-at))))
+                      (call :clear {:graph gid}) (rebuild! gid evs)))]
       (swap! synced assoc gid {:evs evs})
-      (reset! last-sync {:graph gid :mode mode :events (- n (if (= :rebuild mode) 0 seq-n))
-                         :ms (js/Math.round (- (js/performance.now) t0))})
+      ;; «nothing to do» does not erase what the last sync of this graph did (a boot from rows)
+      (when-not (and (= :current mode) (= gid (:graph @last-sync)))
+        (reset! last-sync {:graph gid :mode mode :events (- n (if (= :rebuild mode) 0 seq-n))
+                           :ms (js/Math.round (- (js/performance.now) t0))}))
       mode)))
 
 (defn- schedule! [gid evs]
@@ -157,31 +168,69 @@
 
 ;; --- one owner per browser --------------------------------------------------------------
 
-(defn- start-worker! []
+(defn- boot-kg!
+  "Build the open graph from the rows when they hold its log exactly — the
+   first render then skips the refold (Obsidian's way: boot from the cache)."
+  [gid evs]
+  (p/let [^js h (call :head {:graph gid})]
+    (when (and h (= (build-fold-of gid) (.-fold h)) (= (.-seq h) (count evs)) (pos? (count evs))
+               (= (.-lastId h) (:ev/id (peek evs))))
+      (p/let [s (call :dumpJson {:graph gid})]
+        (when (store/seed-kg! evs (gs/kg-from-dump s))    ; false: the page folded it already
+          (swap! synced assoc gid {:evs evs})
+          (reset! last-sync {:graph gid :mode :booted :events 0 :ms 0}))))))
+
+(defn- start-worker! [boot?]
   (let [w (js/Worker. (.-href (js/URL. "js/graphstore.js" (.-baseURI js/document))) #js {:type "module"})]
     (set! (.-onmessage w) on-message)
     (reset! worker w)
-    (p/let [_ (call :open {})]
+    (p/let [_ (call :open {})
+            _ (when boot? (-> (boot-kg! @store/current @store/events)
+                              (p/catch (fn [e] (js/console.warn "graph store: boot from rows failed:" (ex-message e))))))]
       (reset! ready true)
       ;; hand the handles over as this page goes (a frozen page may keep them)
       (.addEventListener js/window "pagehide" (fn [_] (reset! ready false) (some-> @worker (.postMessage #js {:op "pause" :id -1}))))
       (schedule! @store/current @store/events))))
 
 (defn start!
-  "Queue for the store's lock; the tab that gets it opens the Worker and keeps
-   it until it goes. Without Web Locks or OPFS: no projection, in-memory only."
+  "The tab that gets the store's lock opens the Worker and keeps it until it
+   goes. A promise, settled once boot may render: when the lock is free at
+   once, after the graph is built from the rows (at most 4 s); otherwise at
+   once — this tab folds as before and queues for the lock. Without Web Locks
+   or OPFS: no projection, in-memory only."
   []
-  (when (and (exists? js/navigator.locks) (exists? js/navigator.storage) (exists? js/Worker))
-    (add-watch store/events ::follow (fn [_ _ old new] (when-not (identical? old new) (schedule! @store/current new))))
-    (.request js/navigator.locks lock-name
-              (fn [_]
-                (-> (start-worker!) (p/catch (fn [e] (js/console.warn "graph store unavailable:" (ex-message e)))))
-                (js/Promise. (fn [_ _])))))   ; held for the page's life
-  ;; the checks drive it from outside
+  (if-not (and (exists? js/navigator.locks) (exists? js/navigator.storage) (exists? js/Worker))
+    (p/resolved nil)
+    (do
+      (add-watch store/events ::follow (fn [_ _ old new] (when-not (identical? old new) (schedule! @store/current new))))
+      (p/race
+       [(p/delay 4000 nil)
+        (p/create
+         (fn [booted _]
+           ;; a reload finds the lock still held by the page it replaces for a
+           ;; moment: wait up to 0.5 s (a second tab must not wait), then go on without it
+           (-> (.request js/navigator.locks lock-name #js {:signal (js/AbortSignal.timeout 500)}
+                         (fn [_]
+                           (-> (start-worker! true)
+                               (p/catch (fn [e] (js/console.warn "graph store unavailable:" (ex-message e))))
+                               (p/finally (fn [] (booted nil))))
+                           (js/Promise. (fn [_ _]))))           ; held for the page's life
+               (.catch (fn [_]
+                         (booted nil)
+                         ;; another tab holds it: wait, and take over when it goes
+                         (.request js/navigator.locks lock-name
+                                   (fn [_] (-> (start-worker! false) (p/catch (fn [_] nil))) (js/Promise. (fn [_ _])))))))))]))))
+
+(defn expose!
+  "What the checks drive it by."
+  []
   (set! (.-loretileGraphStore js/window)
         #js {:ready (fn [] @ready)
              :lastSync (fn [] (clj->js @last-sync))
              :current (fn [] (current? @store/current @store/events))
              :equivalence (fn [gid] (p/let [r (equivalence (or gid @store/current))] (clj->js r)))
+             ;; the graph the app renders (built from rows at boot, or folded) = the fold of its log
+             :appGraphIsFold (fn [] (let [norm (fn [kg] (into {} (remove (fn [[k v]] (or (nil? v) (#{::fold/eidx ::fold/nbr} k)))) kg))]
+                                      (= (norm (store/kg)) (norm (fold/kg @store/events)))))
              :search (fn [text] (p/let [r (search @store/current text 20)] (clj->js r)))
              :structure (fn [] (p/let [s (call :structure {:graph @store/current})] s))}))

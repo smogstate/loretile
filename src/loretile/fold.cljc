@@ -192,14 +192,22 @@
 
 (defn- touching? [id x] (or (= id (:from x)) (= id (:to x))))
 
-(defn- neighbour-index
+(defn neighbour-index
   "{node id → #{[from to type] …}}: the keys of the edges touching each node —
    kept by `apply-delta` as ::nbr; built when a kg came from elsewhere."
   [kg]
   (or (::nbr kg)
-      (reduce (fn [m e] (let [k (edge-key e)]
-                          (-> m (update (:from e) (fnil conj #{}) k) (update (:to e) (fnil conj #{}) k))))
-              {} (:edges kg))))
+      (persistent!
+       (reduce (fn [m e] (let [k (edge-key e) f (:from e) t (:to e)
+                               m (assoc! m f (conj (get m f #{}) k))]
+                           (assoc! m t (conj (get m t #{}) k))))
+               (transient {}) (:edges kg)))))
+
+(defn with-indexes
+  "A kg that came from elsewhere (the projection's rows) with the indexes the
+   fold keeps — edges by key, edge keys by node — built once."
+  [kg]
+  (assoc kg ::eidx (edge-index kg) ::nbr (neighbour-index kg)))
 
 (defn edges-at
   "The edges touching node `id` — from the index, never a scan: what a big

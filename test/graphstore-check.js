@@ -1,7 +1,7 @@
 // The graph store's projection in the browser (wiki/Graph-Store.md milestone 3):
 // SQLite in a Worker held by one tab, kept by the delta fold. A log seeded →
 // a rebuild whose rows read back as exactly the fold's graph; the log grown →
-// only the new events; reopened → nothing to do; a different log → a rebuild;
+// only the new events; reopened → the app's graph built from the rows (= the fold); a different log → a rebuild;
 // FTS finds a word; a second tab waits and takes over when the first closes;
 // the log is stored one record per event. (The search-nodes tool's FTS path runs in
 // the tools and chat checks, which now find the projection current.)
@@ -59,23 +59,31 @@ async function settled(page, timeout = 60000) {
     // 3. reopened: nothing to project
     await page.reload({ waitUntil: 'networkidle0' });
     s = await settled(page);
-    check(s.mode === 'current', `a reopen projects nothing (${s.mode})`);
+    check(s.mode === 'current', `a small graph's reopen projects nothing — it folds at once (${s.mode})`);
 
-    // 4. the log grew (same prefix): only the new events
-    await boot(page, seed([...SQL, extra(1), extra(2)]));
+    // 4. the log grows by appends in the page: only the new events
+    for (const n of [1, 2]) await page.evaluate((e) => loretile.store.append_BANG_(cljs.reader.read_string(e)),
+      `{:ev/type :change :ops [[:node-set "join" {:definition "INNER JOIN склеивает строки; правка ${n} про квазистабильность"}]] :edit :material}`);
     s = await settled(page);
-    check(s.mode === 'append' && s.events === 2, `a grown log projects only its new events (${s.mode}, ${s.events})`);
+    check(s.mode === 'append', `appended events are projected alone (${s.mode}, ${s.events})`);
     eq = await page.evaluate(() => window.loretileGraphStore.equivalence());
     check(eq.equal, `…and still reads back as the fold${eq.equal ? '' : ' — ' + eq.differs.join(', ')}`);
     const edited = await page.evaluate(() => window.loretileGraphStore.search('квазистабильность'));
     check(edited.length > 0 && edited[0].id === 'join', 'FTS sees the edited definition, and not the old row');
+
+    // 4b. the same ids saying other things (a replaced log): a rebuild, never the old rows
+    await boot(page, seed(SQL.map((l) => l.includes('"join"') && l.includes(':definition') ? l.replace(/:definition "[^"]*"/, ':definition "совсем другое определение соединения"') : l)));
+    s = await settled(page);
+    check(s.mode === 'rebuild', `a log rewritten with the same ids is rebuilt (${s.mode})`);
+    check((await page.evaluate(() => window.loretileGraphStore.search('совсем другое'))).some((h) => h.id === 'join'), '…and the rows say what the new log says');
+    check(await page.evaluate(() => window.loretileGraphStore.appGraphIsFold()), '…and so does the graph the app renders');
 
     // 5. the log stored one record per event
     const recs = await page.evaluate(() => new Promise((ok) => {
       const r = indexedDB.open('loretile'); r.onsuccess = () => { const d = r.result;
         const q = d.transaction('events').objectStore('events').count(); q.onsuccess = () => ok(q.result); };
     }));
-    check(recs === SQL.length + 2, `the log is stored one IndexedDB record per event (${recs})`);
+    check(recs === SQL.length, `the log is stored one IndexedDB record per event (${recs})`);
 
     // 6. a different log (an import replaced it): a rebuild
     await boot(page, seed([...SQL.slice(0, 40), extra(3)]));
@@ -95,6 +103,20 @@ async function settled(page, timeout = 60000) {
     s = await settled(page2);
     check(s.mode === 'current', `…and finds the rows current (${s.mode})`);
 
+    // 9. a big log (> 5000 events) boots from the rows: no refold, the same graph
+    const { bigGraph, seedBigGraph } = require('./lib/big-graph');
+    await page2.close().catch(() => {});
+    const page3 = await browser.newPage();
+    page3.on('console', (m) => m.type() === 'error' && errs.push(m.text()));
+    await seedBigGraph(page3, BASE.replace(/\/?$/, '/'), bigGraph(2000));
+    await page3.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await settled(page3, 180000);
+    await page3.goto(BASE.replace(/\/?$/, '/') + 'icon.svg');
+    await page3.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await page3.waitForFunction(() => window.loretileGraphStore && window.loretileGraphStore.lastSync(), { timeout: 60000 });
+    s = await page3.evaluate(() => window.loretileGraphStore.lastSync());
+    check(s.mode === 'booted', `a big log's reopen builds the app's graph from the rows — no refold (${s.mode})`);
+    check(await page3.evaluate(() => window.loretileGraphStore.appGraphIsFold()), '…and that graph is exactly the fold of the log');
     check(errs.filter((e) => /graph store/i.test(e)).length === 0, `no graph-store errors in the console${errs.length ? ' (' + errs.slice(0, 2).join(' | ') + ')' : ''}`);
   } catch (e) {
     console.log('CHECK CRASHED', e); failures++;

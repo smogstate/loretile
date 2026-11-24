@@ -40,7 +40,7 @@ async function timed(label, budget, f) {
     await timed('first load → the graph store holds it (in the background)', 300000, async () => {
       await page.waitForFunction(() => window.loretileGraphStore && window.loretileGraphStore.current(), { timeout: 300000, polling: 1000 });
     });
-    await sleep(5000);   // the log's one-time rewrite as JSON
+    await sleep(30000);   // the log's one-time rewrite as JSON (20 s after boot)
     // every later boot: the steady state, where everything below is timed
     await timed('boot → the map drawn', 25000, async () => {
       await page.goto(BASE + 'icon.svg'); await page.goto(BASE, { waitUntil: 'domcontentloaded' });

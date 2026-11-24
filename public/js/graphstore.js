@@ -165,6 +165,18 @@ function dump({ graph }) {
   };
 }
 
+// every current row as ONE JSON string built by SQLite — the page builds its
+// graph from it at boot instead of refolding the log (wiki/Graph-Store.md)
+function dumpJson({ graph }) {
+  const nodes = db.selectValue(`SELECT json_group_array(json_array(id, class, json(data)))
+                                FROM nodes WHERE graph=? AND to_seq IS NULL`, [graph]);
+  const edges = db.selectValue(`SELECT json_group_array(json_array(status, json(data)))
+                                FROM edges WHERE graph=? AND to_seq IS NULL`, [graph]);
+  const discarded = db.selectValue(`SELECT json_group_array(key) FROM discarded WHERE graph=?`, [graph]);
+  const heads = db.selectValue(`SELECT props FROM heads WHERE graph=?`, [graph]);
+  return `{"nodes":${nodes},"edges":${edges},"discarded":${discarded},"heads":${JSON.stringify(heads)}}`;
+}
+
 function pending({ graph, model, limit }) {
   return all(`SELECT DISTINCT n.text_hash, n.text FROM nodes n
               WHERE n.graph=? AND n.to_seq IS NULL AND n.text <> ''
@@ -197,7 +209,7 @@ function vectorSearch({ graph, model, vec, limit }) {
   return scored.sort((a, b) => b[1] - a[1]).slice(0, limit || 20);
 }
 
-const ops = { open, apply, head, clear, structure, node, search, changesSince, dump, pending, putVectors, vectorSearch,
+const ops = { open, apply, head, clear, structure, node, search, changesSince, dump, dumpJson, pending, putVectors, vectorSearch,
   // the handover to another tab: release the access handles now
   pause: () => { pool && pool.pauseVfs(); return true; } };
 

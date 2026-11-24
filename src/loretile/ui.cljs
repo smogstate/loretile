@@ -722,10 +722,12 @@
    out. Cached per graph value — the map re-renders every physics tick."
   [kg]
   (let [{c-kg :kg ids :ids} @hub-cache]
-    (if (identical? c-kg kg)
+    (if (identical? c-kg (:edges kg))
       ids
-      (let [ids (set (keep (fn [[id ns]] (when (>= (count ns) 3) id)) (adjacency kg)))]
-        (reset! hub-cache {:kg kg :ids ids})
+      ;; off the fold's per-node edge index: no adjacency of the whole graph
+      (let [ids (set (keep (fn [[id ks]] (when (>= (count (remove #(= :grounded-in (nth % 2)) ks)) 3) id))
+                           (fold/neighbour-index kg)))]
+        (reset! hub-cache {:kg (:edges kg) :ids ids})
         ids))))
 
 (defn- focus-root []

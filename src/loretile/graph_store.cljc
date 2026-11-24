@@ -40,7 +40,14 @@
 ;; topic has no class schema, so decoding by schema would lose its keywords.
 
 (defn- kw-str [k] (if-let [n (namespace k)] (str n "/" (name k)) (name k)))
-(defn- str-key [s] (if-let [i (str/index-of s "/")] (keyword (subs s 0 i) (subs s (inc i))) (keyword s)))
+;; the same keys and keyword values repeat across thousands of nodes: interned once
+(defonce ^:private key-cache #?(:cljs (js/Map.) :clj (atom {})))
+
+(defn- make-key [s] (if-let [i (str/index-of s "/")] (keyword (subs s 0 i) (subs s (inc i))) (keyword s)))
+
+(defn- str-key [s]
+  #?(:cljs (or (.get key-cache s) (let [k (make-key s)] (.set key-cache s k) k))
+     :clj (or (get @key-cache s) (let [k (make-key s)] (swap! key-cache assoc s k) k))))
 
 (defn encode
   "EDN data → JSON-shaped data (string keys, vectors, strings, numbers)."
@@ -197,6 +204,25 @@
 (defn memory-graph [kg-of] (->MemoryGraph kg-of))
 
 ;; --- the projection, read back: rows → a kg, for the equivalence check ----------
+
+#?(:cljs
+   (defn kg-from-dump
+     "The graph from the projection's dump (`dumpJson`: one JSON string, data
+      inline) — what boot builds instead of refolding the log. Same result as
+      `rows->kg`; the equivalence check holds both to the fold."
+     [s]
+     (let [^js d (js/JSON.parse s)
+           kg (merge fold/empty-kg (some-> (.-heads d) edn/read-string))
+           kg (reduce (fn [kg ^js r] (let [n (decode-js (aget r 2))] (assoc-in kg [(keyword (aget r 1)) (aget r 0)] n)))
+                      kg (.-nodes d))
+           kg (reduce (fn [kg ^js r]
+                        (let [e (decode-js (aget r 1))]
+                          (case (aget r 0)
+                            "accepted" (update kg :edges conj e)
+                            "proposed" (assoc-in kg [:proposals [(:from e) (:to e) (:type e)]] e)
+                            "link" (update kg :object-links conj e))))
+                      kg (.-edges d))]
+       (fold/with-indexes (assoc kg :discarded (into #{} (map edn/read-string) (.-discarded d)))))))
 
 (defn rows->kg
   "A folded kg rebuilt from current rows (nodes [[class data]], edges
