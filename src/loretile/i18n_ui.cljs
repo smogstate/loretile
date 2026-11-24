@@ -94,9 +94,6 @@
    :ui/server-graphs-none {:ru "Все графы сервера уже на этом устройстве." :de "Alle Graphen des Servers sind schon auf diesem Gerät." :en "Every graph on the server is already on this device."}
    :ui/server-graph-meta {:ru "событий: {n}" :de "Ereignisse: {n}" :en "events: {n}"}
    :ui/open {:ru "Открыть" :de "Öffnen" :en "Open"}
-   :ui/peer-conflicts-1 {:ru "конфликт" :de "Konflikt" :en "conflict"}
-   :ui/peer-conflicts-2 {:ru "конфликта" :de "Konflikte" :en "conflicts"}
-   :ui/peer-conflicts-5 {:ru "конфликтов" :de "Konflikte" :en "conflicts"}
    :ui/peer-nodes-1 {:ru "новый узел" :de "neuer Knoten" :en "new node"}
    :ui/peer-nodes-2 {:ru "новых узла" :de "neue Knoten" :en "new nodes"}
    :ui/peer-nodes-5 {:ru "новых узлов" :de "neue Knoten" :en "new nodes"}
@@ -109,7 +106,6 @@
    :ui/peer-removed-1 {:ru "удаление" :de "Entfernung" :en "removal"}
    :ui/peer-removed-2 {:ru "удаления" :de "Entfernungen" :en "removals"}
    :ui/peer-removed-5 {:ru "удалений" :de "Entfernungen" :en "removals"}
-   :ui/conflict-arrived {:ru "Нужно ваше решение: изменения разошлись — см. ассистента" :de "Ihre Entscheidung ist nötig: Änderungen kollidieren — siehe Assistent" :en "Your decision is needed: changes collided — see the assistant"}
    :ui/prop-icon {:ru "значок" :de "Symbol" :en "icon"}
    :ui/icon-none {:ru "без значка" :de "ohne Symbol" :en "no icon"}
    :ui/style-reset {:ru "вернуть унаследованный" :de "auf geerbt zurücksetzen" :en "back to inherited"}
@@ -730,6 +726,8 @@
    :ui/error-old-format {:ru "Графов в старом формате: {n} — их больше не открыть (формат событий сменился 2026-11-20). Они отложены, не удалены; загрузите демо заново или импортируйте граф, экспортированный в новом формате."
                          :de "Graphen im alten Format: {n} — sie lassen sich nicht mehr öffnen (das Ereignisformat hat sich am 2026-11-20 geändert). Sie sind beiseitegelegt, nicht gelöscht; laden Sie die Demos neu oder importieren Sie einen Graphen im neuen Format."
                          :en "Graphs in the old format: {n} — they can no longer be opened (the event format changed on 2026-11-20). They were set aside, not deleted; reload the demos or import a graph exported in the new format."}
+   :ui/error-server-refused {:ru "Сервер не принял правку — граф там уже другой: {why}" :de "Der Server hat die Änderung abgelehnt — der Graph ist dort schon anders: {why}" :en "The server refused this edit — the graph there has changed: {why}"}
+   :ui/error-server-unreachable {:ru "Сервер недоступен — правки не сохранены ({n}). Проверьте соединение и повторите" :de "Server nicht erreichbar — Änderungen nicht gespeichert ({n}). Verbindung prüfen und erneut versuchen" :en "The server is out of reach — edits not saved ({n}). Check the connection and try again"}
    :ui/error-storage-full {:ru "Хранилище браузера переполнено — последнее изменение не сохранилось. Экспортируйте граф или удалите старые беседы"
                            :de "Browser-Speicher voll — die letzte Änderung wurde nicht gespeichert. Graph exportieren oder alte Gespräche löschen"
                            :en "Browser storage is full — the last change was not saved. Export the graph or remove old conversations"}

@@ -1,10 +1,11 @@
-// Graphs kept by the server, local-first sync (wiki/Graph-Sync.md, phase B):
-// two browsers (separate profiles) on one server. A makes a graph — it
-// reaches the server; B opens it from «На сервере»; an edit in either reaches
-// the other; the same property set two ways becomes a CONFLICT CARD for a
-// person, and «оставить моё» wins for both; a node edited by B but removed
-// by A comes back on «вернуть и оставить моё»; an ontology changed on one
-// device reaches the graphs bound to it on the other.
+// Graphs kept by the server, SERVER-FIRST (wiki/Graph-Store.md): two browsers
+// (separate profiles) on one server. A makes a graph — it reaches the server
+// at once; B opens it from «На сервере»; an edit in either reaches the other;
+// the same property set two ways: the later one stands, no card; B edits a
+// node A removed: the server refuses it, B's edit goes back and the banner
+// says why; a server out of reach takes the edit back; an edit never
+// confirmed is gone after a reload; an ontology changed on one device
+// reaches the graphs bound to it on the other.
 // Usage (dev or release bundle in public/): node test/sync-check.js
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
@@ -69,7 +70,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await A.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(300);
     await A.evaluate(() => [...document.querySelectorAll('.rail .rbtn')].find((e) => /Тема/.test(e.title)).click());
     await A.waitForSelector('.modal input'); await A.type('.modal input', 'Икс'); await A.click('.modal button.primary');
-    await sleep(3000);   // the push follows an edit after ~2 s
+    await sleep(1500);   // the edit goes to the server at once
     await syncNow(A);
     const gid = await A.evaluate(() => cljs.core.deref(loretile.store.current));
     const nid = (await log(A)).match(/:node-set "([^"]+)" \{:title "Икс"/)[1];
@@ -104,41 +105,45 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await sleep(8500);
     check((await pills(A)).length === 0, 'the pills fade after 8 s');
 
-    // the same property set two ways: a conflict card for the one who syncs second
-    // A stores first, THEN B edits (B has not pulled A's value: a real clash).
-    // Appending both before syncing raced: B's own push timer (~2 s after an
-    // edit) could land B's value first under load, and the card went to A
+    // the same property set two ways: the server takes both in order — the
+    // later one stands; nobody is asked (server-first has no conflict cards)
     await append(A, `{:ev/type :change :ops [[:node-set "${nid}" {:stage "черновик"}]]}`);
     await syncNow(A);
     await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:stage "готово"}]]}`);
-    await syncNow(B);
-    await B.goto(BASE + '#/chat', { waitUntil: 'networkidle0' });
-    await B.waitForSelector('.card-conflict', { timeout: 8000 }).catch(() => {});
-    const card = await B.$eval('.card-conflict', (e) => e.textContent).catch(() => '');
-    check(/stage/.test(card) && /черновик/.test(card) && /готово/.test(card), 'B gets a conflict card: theirs «черновик», mine «готово»');
-    check(await B.$('.nav-chat .conflict-badge') !== null, 'and a badge on the assistant');
-    check(await B.$('.peer-pill.hot.conflicts') !== null, 'and a red pill: a conflict waits');
-    await B.screenshot({ path: path.join(__dirname, 'shot-sync-conflict.png') });
-    check(!/:stage "готово"/.test(await onServer(gid)), 'B\'s clashing value was held back, not sent');
-    await B.click('.card-conflict .conflict-mine'); await sleep(500); await syncNow(B);
-    check(await B.$('.card-conflict') === null, '«оставить моё» resolves it');
-    await syncNow(A);
+    await syncNow(B); await syncNow(A);
     const aLog = await log(A);
-    check(aLog.lastIndexOf(':stage "готово"') > aLog.lastIndexOf(':stage "черновик"'), 'and A ends with B\'s value');
+    check(aLog.lastIndexOf(':stage "готово"') > aLog.lastIndexOf(':stage "черновик"'), 'the same property set by both: the later value stands for both');
+    await B.goto(BASE + '#/chat', { waitUntil: 'networkidle0' }); await sleep(400);
+    check(await B.$('.card-conflict') === null && await B.$('.conflict-badge') === null, 'and nobody gets a conflict card');
 
-    // A removes the node B is editing: B decides to bring it back
+    // A removes the node; B, not yet knowing, edits it: the server refuses B's edit
     await append(A, `{:ev/type :change :ops [[:node-remove "${nid}"]]}`);
     await syncNow(A);
-    await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:priority "высокий"}]]}`);
-    await syncNow(B);
-    await B.goto(BASE + '#/chat', { waitUntil: 'networkidle0' });
-    await B.waitForSelector('.card-conflict', { timeout: 8000 }).catch(() => {});
-    check(/удалил/.test(await B.$eval('.card-conflict', (e) => e.textContent).catch(() => '')), 'B is told the node it changed was removed');
-    await B.click('.card-conflict .conflict-mine'); await sleep(500); await syncNow(B);
-    await syncNow(A);
-    await A.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(800);
-    check(await A.evaluate(() => document.querySelectorAll('.node').length) === 3 && /:priority "высокий"/.test(await log(A)),
-      '«вернуть и оставить моё» brings it back for both, with B\'s edit');
+    await B.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(300);
+    const localOk = await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:priority "высокий"}]]}`);
+    check(!localOk, 'B\'s graph still has the node, so B\'s own guard lets the edit through');
+    await syncNow(B); await sleep(300);
+    check(/Сервер не принял/.test(await B.$eval('div.error', (e) => e.textContent).catch(() => '')), 'the server refuses it, and B\'s banner says so');
+    check(!/:priority "высокий"/.test(await log(B)) && !/:priority "высокий"/.test(await onServer(gid)), 'the refused edit is gone from B, and never reached the server');
+    await B.evaluate(() => cljs.core.reset_BANG_(loretile.store.last_error, null));
+
+    // the server out of reach: no offline — the edit goes back
+    await B.evaluate(() => { window.__fetch = window.fetch;
+      window.fetch = (u, o) => String(u).includes('api/graphs') ? Promise.reject(new TypeError('offline')) : window.__fetch(u, o); });
+    await append(B, `{:ev/type :change :ops [[:node-set "n-2" {:note "без сети"}]]}`);
+    await sleep(800);
+    check(/Сервер недоступен/.test(await B.$eval('div.error', (e) => e.textContent).catch(() => '')), 'out of reach: the banner says the edit was not saved');
+    check(!/без сети/.test(await log(B)), 'and the edit is taken back');
+    await B.evaluate(() => { window.fetch = window.__fetch; cljs.core.reset_BANG_(loretile.store.last_error, null); });
+
+    // an edit the server never confirmed does not survive a reload
+    await B.evaluate(() => { window.__fetch = window.fetch;
+      window.fetch = (u, o) => (o && o.method === 'POST' && String(u).includes('api/graphs')) ? new Promise(() => {}) : window.__fetch(u, o); });
+    await append(B, `{:ev/type :change :ops [[:node-set "n-2" {:note "не подтверждено"}]]}`);
+    await sleep(300);
+    check(/не подтверждено/.test(await log(B)), 'an edit waiting for the server shows at once');
+    await B.reload({ waitUntil: 'networkidle0' }); await sleep(800);
+    check(!/не подтверждено/.test(await log(B)) && !/не подтверждено/.test(await onServer(gid)), 'after a reload the unconfirmed edit is gone — unconfirmed is unsaved');
 
     // an ONTOLOGY changed on one device reaches the graphs bound to it on another
     // (2026-11-20): B pulls the ontology graph, and its own bound graph takes the copy

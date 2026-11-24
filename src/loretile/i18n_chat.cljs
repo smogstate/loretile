@@ -18,20 +18,6 @@
    :chat/relation-draft-tag {:ru "нет такой связи" :de "Beziehung fehlt" :en "missing relation"}
    :chat/relation-draft-q {:ru "Документ называет связь «{rel}», которой нет в онтологии «{onto}». Добавить?" :de "Das Dokument nennt die Beziehung „{rel}“, die in der Ontologie „{onto}“ fehlt. Hinzufügen?" :en "The document names a relation «{rel}» the ontology «{onto}» lacks. Add it?"}
    :chat/relation-draft-waiting {:ru "Ждут этой связи: {n}" :de "Warten auf diese Beziehung: {n}" :en "Waiting for this relation: {n}"}
-   :chat/conflict-tag {:ru "нужно решение" :de "Entscheidung nötig" :en "needs a decision"}
-   :chat/conflict-prop {:ru "«{key}» у «{node}»" :de "„{key}“ von „{node}“" :en "«{key}» of «{node}»"}
-   :chat/conflict-graph {:ru "графа" :de "des Graphen" :en "the graph"}
-   :chat/conflict-theirs {:ru "у другого участника:" :de "beim anderen:" :en "theirs:"}
-   :chat/conflict-mine {:ru "у вас:" :de "bei Ihnen:" :en "yours:"}
-   :chat/conflict-same-lead {:ru "Вы и другой участник поменяли одно и то же по-разному. Ваше пока не отправлено." :de "Sie und jemand anderes haben dasselbe verschieden geändert. Ihres ist noch nicht gesendet." :en "You and someone else changed the same thing differently. Yours has not been sent yet."}
-   :chat/conflict-overridden-lead {:ru "Ваше изменение легло поверх чужого. Оставить его или вернуть их значение?" :de "Ihre Änderung hat eine andere überschrieben. Behalten oder deren Wert zurückholen?" :en "Your change landed over someone else's. Keep it, or bring theirs back?"}
-   :chat/conflict-keep-mine {:ru "Оставить моё" :de "Meins behalten" :en "Keep mine"}
-   :chat/conflict-keep-theirs {:ru "Оставить их" :de "Ihres behalten" :en "Keep theirs"}
-   :chat/conflict-removed {:ru "Вы меняли «{what}», а другой участник это удалил." :de "Sie haben „{what}“ geändert, jemand anderes hat es gelöscht." :en "You changed «{what}», and someone else removed it."}
-   :chat/conflict-restore {:ru "Вернуть и оставить моё" :de "Zurückholen, meins behalten" :en "Bring it back, keep mine"}
-   :chat/conflict-accept-removal {:ru "Согласиться с удалением" :de "Löschen akzeptieren" :en "Accept the removal"}
-   :chat/conflict-refused {:ru "Ваше изменение больше не ложится на граф:" :de "Ihre Änderung passt nicht mehr in den Graphen:" :en "Your change no longer fits the graph:"}
-   :chat/conflict-drop-mine {:ru "Отбросить моё" :de "Meins verwerfen" :en "Drop mine"}
    :chat/triage-tag {:ru "что это за документ?" :de "Was ist das für ein Dokument?" :en "what is this document?"}
    :chat/triage-q {:ru "«{name}» — это…" :de "„{name}“ ist…" :en "\"{name}\" is…"}
    :chat/triage-ontology {:ru "онтология — виды вещей и как они связаны" :de "eine Ontologie — Arten von Dingen und wie sie zusammenhängen" :en "an ontology — kinds of things and how they relate"}

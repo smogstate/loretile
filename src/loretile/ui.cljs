@@ -117,7 +117,7 @@
 (def ^:private theme-key "loretile-theme")
 (defonce theme (r/atom (.getItem js/localStorage theme-key)))
 
-(def ^:private pill-icons {:conflicts :question :nodes :plus :links :link :props :pencil :removed :trash})
+(def ^:private pill-icons {:nodes :plus :links :link :props :pencil :removed :trash})
 
 (defn- peer-pills
   "What others did on the last sync (wiki/Graph-Sync.md phase C, vintry's
@@ -2346,10 +2346,12 @@
               [:a {:href (str "#/c/" (js/encodeURIComponent (:id c)))}
                (:title c) (when (fold/stale? kg (:id c)) (t :ui/node-stale-suffix))])])]))))
 
-(defn error-banner []
-  (when-let [{:keys [error detail]} @store/last-error]
-    [:div.error
+(defn- error-text [{:keys [error detail]}]
      (case error
+       ;; server-first graphs (wiki/Graph-Store.md): the server's guard said no,
+       ;; in its own words; or the server was out of reach and the edits went back
+       :server-refused (t :ui/error-server-refused {"{why}" (error-text detail)})
+       :server-unreachable (t :ui/error-server-unreachable {"{n}" detail})
        :requires-cycle (t :ui/error-cycle {"{detail}" (pr-str detail)})
        :was-discarded (t :ui/error-discarded)
        :missing-endpoint (t :ui/error-missing-endpoint)
@@ -2381,7 +2383,12 @@
        :bad-object-link (t :ui/error-bad-object-link)
        :merge-unavailable (t :ui/merge-error {"{e}" detail})
        :past-view (t :ui/error-past-view)
-       (pr-str [error detail]))
+       (pr-str [error detail])))
+
+(defn error-banner []
+  (when-let [err @store/last-error]
+    [:div.error
+     (error-text err)
      [:button {:on-click #(reset! store/last-error nil) :title (t :ui/close) :aria-label (t :ui/close)} [icons/icon :close]]]))
 
 ;; kintale's graph-side rail: icon-only round buttons stacked at the
@@ -3126,22 +3133,13 @@
    ;; does something even when the panel is where you cannot see it
      [:a.rbtn.nav-chat {:title (t :ui/assistant) :href (if (= :chat (:view @route)) "#/" "#/chat")
                         :class (when (= :chat (:view @route)) "on")}
-      [icons/icon :chat]
-      ;; conflicts waiting for a person (graphs kept by the server)
-      (when-let [n (not-empty (sync/graph-conflicts @store/current))]
-        [:span.rbtn-badge.conflict-badge (count n)])]]))
+      [icons/icon :chat]]]))
 
 (defn- undo-asked! []
   (if (store/undo!) (snack! (t :ui/undone)) (snack! (t :ui/nothing-to-undo))))
 
 (defn- redo-asked! []
   (if (store/redo!) (snack! (t :ui/redone)) (snack! (t :ui/nothing-to-redo))))
-
-(defonce ^:private conflict-watch
-  (add-watch sync/conflicts ::snack
-             (fn [_ _ o n]
-               (let [g @store/current]
-                 (when (> (count (get n g)) (count (get o g))) (snack! (t :ui/conflict-arrived)))))))
 
 (defn global-keys! []
   (js/window.addEventListener
