@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Graph store proof</title>
+<pre id="log">…</pre>
+<script type="module">
+  // ?phase=full|boot|second &n=40000 — results land in window.__proof
+  const q = new URLSearchParams(location.search);
+  const phase = q.get('phase') || 'full', n = +(q.get('n') || 40000);
+  const log = (s) => (document.getElementById('log').textContent += '\n' + s);
+  const w = new Worker('worker.js?cache=' + (q.get('cache') || 0), { type: 'module' });
+  const t0 = performance.now();
+  w.onmessage = ({ data }) => {
+    if (data.progress) log(data.progress);
+    if (data.structureJson) {
+      // the structure as the UI would receive it from a server: one JSON string
+      const t = performance.now();
+      const s = JSON.parse(data.structureJson);
+      window.__structure = { parse_ms: Math.round((performance.now() - t) * 10) / 10,
+                             heap_mb: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e5) / 10 : null,
+                             nodes: s.nodes.length };
+    }
+    if (data.done) { window.__proof = { phase, n, wall_ms: Math.round(performance.now() - t0), ...data.done, main: window.__structure }; log(JSON.stringify(window.__proof, null, 1)); }
+    if (data.error) { window.__proof = { phase, error: data.error }; log(data.error); }
+  };
+  w.postMessage({ phase, n });
+  // the runner asks a holding tab to hand the pool over
+  window.__pause = () => new Promise((ok) => { w.addEventListener('message', ({ data }) => data.done && data.done.paused && ok(true)); w.postMessage({ phase: 'pause' }); });
+</script>
