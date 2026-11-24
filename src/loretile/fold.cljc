@@ -41,7 +41,8 @@
   (link? [r link] "is {:from :to :type} an object link")
   (edges-of [r id] "every edge touching node id")
   (links-of [r id] "every object link touching object id")
-  (edges-of-type [r type] "every edge of one relation (the cycle check)")
+  (edges-of-type [r type] "every edge of one relation")
+  (successors [r type id] "the `to` ends of node id's edges of one relation — the cycle check walks these")
   (written-from [r source] "{:objects [[id o]] :concepts [[id c]]}: grounded in / drafted from a source")
   (all-of [r k] "[[id node]] filed under k (:cqs, :courses …)")
   (children [r id] "[[k id node]]: the objects and items about topic id")
@@ -56,14 +57,16 @@
   [r type start goal]
   ;; one visited set for the whole walk: a set per PATH walked every path
   ;; of a graph with no cycle — 2^k for k parallel steps (review 2026-10-16 A12)
-  (let [req (group-by :from (edges-of-type r type))]
-    (loop [stack [start] seen #{start}]
-      (if-let [n (peek stack)]
-        (if (= n goal)
-          true
-          (let [next (remove seen (map :to (req n)))]
-            (recur (into (pop stack) next) (into seen next))))
-        false))))
+  ;; asks each node for its own successors: a check touches what is reachable
+  ;; from `start`, never the whole relation (grouping every edge per check made
+  ;; a bulk upload quadratic — 80k links × 80k edges)
+  (loop [stack [start] seen #{start}]
+    (if-let [n (peek stack)]
+      (if (= n goal)
+        true
+        (let [next (remove seen (successors r type n))]
+          (recur (into (pop stack) next) (into seen next))))
+      false)))
 
 (declare map-reader)
 
@@ -226,6 +229,7 @@
   (edges-of [_ id] (filter #(touching? id %) (:edges kg)))
   (links-of [_ id] (filter #(touching? id %) (:object-links kg)))
   (edges-of-type [_ type] (filter #(= type (:type %)) (:edges kg)))
+  (successors [_ type id] (keep #(when (and (= type (:type %)) (= id (:from %))) (:to %)) (edges-at kg id)))
   (written-from [_ s] {:objects (filter #(= s (:grounded-in (val %))) (:objects kg))
                        :concepts (filter #(= s (:source-id (val %))) (:concepts kg))})
   (all-of [_ k] (seq (get kg k)))
@@ -262,6 +266,9 @@
                      (concat (remove #(contains? dl %) (links-of base id))
                              (for [[l v] dl :when (and v (touching? id l))] l))))
   (edges-of-type [_ type] (over-edges d (edges-of-type base type) #(= type (:type %))))
+  (successors [_ type id] (let [de (:edges d)]
+                            (concat (remove #(contains? de [id % type]) (successors base type id))
+                                    (for [[[f t ty] e] de :when (and e (= f id) (= ty type))] t))))
   (written-from [_ s] (let [w (written-from base s)]
                         {:objects (over-rows d (:objects w) (fn [at n] (and (= :objects at) (= s (:grounded-in n)))))
                          :concepts (over-rows d (:concepts w) (fn [at n] (and (= :concepts at) (= s (:source-id n)))))}))

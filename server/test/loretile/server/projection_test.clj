@@ -65,7 +65,18 @@
         (is (seq (proj/search db g {:text "новое определение" :limit 5})) "hybrid without a vector: words")
         (is (seq (proj/search db g {:text "новое определение" :mode "verbatim" :limit 5})) "verbatim: the phrase")
         (is (empty? (proj/search db g {:text "определение новое" :mode "verbatim" :limit 5})) "verbatim: words out of order are not the phrase")
-        (is (empty? (proj/search db g {:text "новое определение" :mode "semantic" :limit 5})) "semantic without a vector: nothing")))))
+        (is (empty? (proj/search db g {:text "новое определение" :mode "semantic" :limit 5})) "semantic without a vector: nothing")))
+    ;; the cycle check's relation cache (in memory) never outlives a rollback
+    (testing "a refused batch leaves no edge behind in the cycle check's cache"
+      (let [n (inc (count evs))
+            nodes [[:node-set "n1" {:title "Эн один"}] [:node-set "n2" {:title "Эн два"}]]
+            e1 (ev "r1" (conj nodes [:edge-set "n1" :requires "n2" {}]))
+            e2 (ev "r2" [[:edge-set "n2" :requires "n1" {}]])
+            e3 (ev "r3" (conj nodes [:edge-set "n2" :requires "n1" {}]))
+            e4 (ev "r4" [[:edge-set "n1" :requires "n2" {}]])]
+        (is (some? (:error (proj/append! db g n [e1 e2] (fn [])))) "n1→n2 then n2→n1: refused whole")
+        (is (nil? (proj/append! db g n [e3] (fn []))) "n2→n1 alone is fine: n1→n2 was never stored")
+        (is (some? (:error (proj/append! db g (inc n) [e4] (fn [])))) "and now n1→n2 closes a cycle")))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'loretile.server.projection-test)]

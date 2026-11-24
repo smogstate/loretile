@@ -10,7 +10,8 @@
    ponytail: one connection behind one lock (SQLite has one writer anyway);
    reads wait behind a write. A read-only WAL connection pool when
    concurrent readers matter."
-  (:require [clojure.edn :as edn]
+  (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [loretile.fold :as fold]
@@ -84,6 +85,26 @@
 (defn- value [db sql & params] (ffirst (apply rows db sql params)))
 (defn- exec! [db sql & params] (.executeUpdate (bind db sql params)))
 
+;; each relation's current edges as ADJACENCY, per graph, in memory — the
+;; cycle check walked them through SQL on every new link (≈ 0.3 s at 40k
+;; topics). Built on first use; kept by `apply-changes!`; dropped whole when a
+;; transaction rolls back or a graph is cleared (rebuilt on next use — never
+;; out of step with the tables). {[graph type] {from #{to …}}}
+(defonce ^:private rel-cache (atom {}))
+
+(defn- adjacency-of [db graph type-str]
+  (let [k [graph type-str]]
+    (or (get @rel-cache k)
+        (let [adj (reduce (fn [m [f t]] (update m f (fnil conj #{}) t)) {}
+                          (rows db "SELECT \"from\", \"to\" FROM edges WHERE graph=? AND type=? AND status='accepted' AND to_seq IS NULL" graph type-str))]
+          (swap! rel-cache assoc k adj)
+          adj))))
+
+(defn- adj-edit! [graph type-str f from to]
+  (swap! rel-cache (fn [m] (if-let [adj (get m [graph type-str])]
+                             (assoc m [graph type-str] (update adj from (fnil f #{}) to))
+                             m))))
+
 (defn transact!
   "f inside one transaction, under the projection's lock; rolled back when
    f throws or returns {:error …}."
@@ -92,9 +113,9 @@
     (.setAutoCommit conn false)
     (try
       (let [r (f)]
-        (if (:error r) (.rollback conn) (.commit conn))
+        (if (:error r) (do (.rollback conn) (reset! rel-cache {})) (.commit conn))
         r)
-      (catch Throwable t (.rollback conn) (throw t))
+      (catch Throwable t (.rollback conn) (reset! rel-cache {}) (throw t))
       (finally (.setAutoCommit conn true)))))
 
 (defmacro ^:private locked [db & body] `(locking (:lock ~db) ~@body))
@@ -134,8 +155,9 @@
   ;; ponytail: edges as {:from :to :type} off the columns, data not decoded —
   ;; all the cycle walk reads; at 40k a full decode per guard costs ~0.5 s.
   ;; Decode `data` here if the fold ever reads more of these edges.
-  (edges-of-type [_ type] (map (fn [[f t]] {:from f :to t :type type})
-                               (rows db "SELECT \"from\", \"to\" FROM edges WHERE graph=? AND type=? AND status='accepted' AND to_seq IS NULL" graph (kw-str type))))
+  (edges-of-type [_ type]
+    (for [[f ts] (adjacency-of db graph (kw-str type)), t ts] {:from f :to t :type type}))
+  (successors [_ type id] (get (adjacency-of db graph (kw-str type)) id))
   (written-from [_ s]
     (let [s (gs/encode s)]   ; data is tagged JSON: a string starting with ":" or "'" is stored with a "'"
       {:objects (id-nodes (rows db "SELECT id, data FROM nodes WHERE graph=? AND class='objects' AND to_seq IS NULL AND json_extract(data, '$.\"grounded-in\"')=?" graph s))
@@ -171,10 +193,13 @@
       (let [rid (value db "INSERT INTO nodes VALUES (?,?,?,NULL,?,?,?,?,?,?,?,?) RETURNING rowid"
                        graph (:id n) s (:class n) (:status n) (:title n) (:short n) (:parent n) (:text n) (:text_hash n) (:data n))]
         (when (seq (:text n)) (exec! db "INSERT INTO nodes_fts (rowid, text) VALUES (?,?)" rid (:text n)))))
-    (doseq [[from type to] removed-edges] (close-edge! from type to))
+    (doseq [[from type to] removed-edges]
+      (close-edge! from type to)
+      (adj-edit! graph type disj from to))
     (doseq [e edges]
       (close-edge! (:from e) (:type e) (:to e))
-      (exec! db "INSERT INTO edges VALUES (?,?,?,?,?,NULL,?,?)" graph (:from e) (:type e) (:to e) s (:status e) (:data e)))
+      (exec! db "INSERT INTO edges VALUES (?,?,?,?,?,NULL,?,?)" graph (:from e) (:type e) (:to e) s (:status e) (:data e))
+      (adj-edit! graph (:type e) (if (= "accepted" (:status e)) conj disj) (:from e) (:to e)))
     (doseq [k discarded] (exec! db "INSERT OR IGNORE INTO discarded VALUES (?,?,?)" graph k s))
     (exec! db "INSERT INTO heads (graph, seq, last_id, fold) VALUES (?,?,?,?)
                ON CONFLICT(graph) DO UPDATE SET seq=excluded.seq, last_id=excluded.last_id, fold=excluded.fold"
@@ -204,6 +229,7 @@
                    (do (persist!) nil)))))
 
 (defn clear! [db graph]
+  (swap! rel-cache #(into {} (remove (fn [[[g _] _]] (= g graph))) %))
   (transact! db (fn []
                   (doseq [[rid] (rows db "SELECT rowid FROM nodes WHERE graph=? AND to_seq IS NULL" graph)]
                     (exec! db "DELETE FROM nodes_fts WHERE rowid=?" rid))
@@ -244,6 +270,19 @@
     (str "{\"nodes\":" (value db "SELECT json_group_array(json_array(id, class, status, title, short, parent)) FROM nodes WHERE graph=? AND to_seq IS NULL" graph)
          ",\"edges\":" (value db "SELECT json_group_array(json_array(\"from\", type, \"to\", status)) FROM edges WHERE graph=? AND to_seq IS NULL" graph)
          "}")))
+
+(defn dump-json
+  "Every current row of `graph` as one JSON string built by SQLite (the Worker's
+   `dumpJson`), with the head — the browser builds its graph from it instead of
+   replaying the log."
+  [db graph]
+  (locked db
+    (let [[n last-id] (first (rows db "SELECT seq, last_id FROM heads WHERE graph=?" graph))]
+      (str "{\"head\":" (or n 0) ",\"lastId\":" (json/write-str last-id)
+           ",\"nodes\":" (value db "SELECT json_group_array(json_array(id, class, json(data))) FROM nodes WHERE graph=? AND to_seq IS NULL" graph)
+           ",\"edges\":" (value db "SELECT json_group_array(json_array(status, json(data))) FROM edges WHERE graph=? AND to_seq IS NULL" graph)
+           ",\"discarded\":" (value db "SELECT json_group_array(key) FROM discarded WHERE graph=?" graph)
+           ",\"heads\":" (json/write-str (value db "SELECT props FROM heads WHERE graph=?" graph)) "}"))))
 
 (defn node
   "{:node [class data] :children [[class id data]] :out [data] :in [data]} —

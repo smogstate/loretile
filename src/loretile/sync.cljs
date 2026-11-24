@@ -17,6 +17,7 @@
    uploads it."
   (:require [cljs.reader :as reader]
             [loretile.fold :as fold]
+            [loretile.graph-store :as gs]
             [loretile.llm :as llm]
             [loretile.store :as store]
             [loretile.sync-merge :as m]
@@ -93,15 +94,49 @@
       (p/then (fn [rows] (vec (for [[id class title short parent score] (js->clj rows)]
                                 {:id id :class class :title title :short short :parent parent :score score}))))))
 
+(defn- fetch-text [path]
+  (-> (js/fetch (str "api/graphs" path))
+      (p/then (fn [^js r] (if (.-ok r) (.text r) (p/rejected (ex-info (str "HTTP " (.-status r)) {:status (.-status r)})))))))
+
+(defn- seed-from-rows!
+  "The open graph built from the server's rows (`rows`: one JSON string, the
+   projection's current rows) when they hold exactly its log `evs` — no
+   replay of the log in this browser (wiki/Graph-Store.md). true when seeded."
+  [evs rows]
+  (let [^js d (js/JSON.parse rows)]
+    (and (= (.-head d) (count evs)) (pos? (count evs)) (= (.-lastId d) (:ev/id (peek evs)))
+         (store/seed-kg! evs (gs/kg-from-dump rows)))))
+
 (defn open-server-graph!
-  "Bring a server graph onto this device and open it: its whole log,
-   confirmed up to the server's seq. Promise of the id."
+  "Bring a server graph onto this device and open it: its whole log (as
+   JSON — parsed natively, ~2.5× faster than EDN), confirmed up to the
+   server's seq, and its graph built from the server's rows, fetched at the
+   same time, instead of replaying the log here. Promise of the id."
   [{:keys [id] :as meta}]
-  (p/let [{server-seq :seq events :events} (api-get (str "/" (js/encodeURIComponent id) "?after=0"))]
-    (when (store/add-server-graph! meta events)
-      (swap! sync-state assoc id {:seq server-seq :confirmed (count events)})
-      (save!)
-      id)))
+  (let [path (str "/" (js/encodeURIComponent id))]
+    (p/let [[text rows] (p/all [(fetch-text (str path "?after=0&format=json"))
+                                (p/catch (fetch-text (str path "/rows")) (constantly nil))])
+            ^js d (js/JSON.parse text)
+            events (persistent! (reduce (fn [v e] (conj! v (gs/decode-js e))) (transient []) (.-events d)))]
+      (when (store/add-server-graph! meta events)
+        (swap! sync-state assoc id {:seq (.-seq d) :confirmed (count events)})
+        (save!)
+        (when rows (try (seed-from-rows! (store/graph-events id) rows)
+                        (catch :default e (js/console.warn "loretile: graph from the server's rows failed:" (ex-message e)))))
+        id))))
+
+(defn boot-kg!
+  "Boot, a big log already on this device: built from the server's rows when
+   everything here is confirmed and the rows hold exactly it. A promise."
+  []
+  (let [gid @store/current
+        evs @store/events
+        {:keys [confirmed]} (entry gid)]
+    (if (and enabled? (= confirmed (count evs)) (> (count evs) 5000))
+      (-> (p/let [rows (fetch-text (str "/" (js/encodeURIComponent gid) "/rows"))]
+            (seed-from-rows! evs rows))
+          (p/catch (fn [_] nil)))
+      (p/resolved nil))))
 
 ;; --- one cycle: pull what others stored, push what is provisional ---------------
 

@@ -25,8 +25,11 @@
   ;; local mode: the projection in SQLite, in the one tab holding it. A BIG
   ;; log's first render waits (≤ 4 s) for the graph built from its rows — it
   ;; replaces a refold of seconds; a small one renders at once (its fold is instant)
-  (.then (let [booting (when-not sync/enabled? (graph-local/start!))]
-           (if (and booting (> (count @store/events) 5000)) booting (js/Promise.resolve nil)))
+  (.then (let [booting (if sync/enabled? (sync/boot-kg!) (graph-local/start!))]
+           ;; server mode: the server's rows; local: the Worker's — each ≤ 4 s
+           (if (and booting (> (count @store/events) 5000))
+             (js/Promise.race #js [booting (js/Promise. (fn [ok] (js/setTimeout ok 4000)))])
+             (js/Promise.resolve nil)))
          (fn []
   (vectors/load!)
   (chat/restore!)

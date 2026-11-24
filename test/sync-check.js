@@ -85,6 +85,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     check(offered.some((t) => /Общий граф/.test(t)), 'B sees it under «На сервере»');
     await B.click('.server-graphs .open-server'); await sleep(1500);
     check(await B.evaluate(() => document.querySelectorAll('.node').length) === 1 && /Икс/.test(await log(B)), 'B opens it and has A\'s node');
+    check(await B.evaluate(() => window.loretileGraphStore.appGraphIsFold()), 'B\'s graph, built from the server\'s rows, is exactly the fold of the log it received');
 
     // an edit in B reaches A
     await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:owner "Борис"}]]}`);

@@ -18,12 +18,14 @@
    ponytail: one server process — the per-graph lock and the cache of known
    ids live in memory. Several instances need a conditional write (S3
    If-None-Match on the batch key) before they can share a store."
-  (:require [clojure.edn :as edn]
+  (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [loretile.server.config :as config]
             [loretile.server.embedder :as embedder]
             [loretile.server.log :refer [log]]
+            [loretile.graph-store :as gs]
             [loretile.server.projection :as proj]
             [loretile.server.s3 :as s3])
   (:import (java.io File)
@@ -148,6 +150,8 @@
 
 (defn structure "[head json]" [gid] (read-graph gid (fn [db g] [(event-count g) (proj/structure db gid)])))
 (defn node [gid id] (read-graph gid (fn [db _] (proj/node db gid id))))
+(defn rows-json "Every current row as one JSON string (proj/dump-json)." [gid] (read-graph gid (fn [db _] (proj/dump-json db gid))))
+
 (defn changes-since [gid n] (read-graph gid (fn [db _] (proj/changes-since db gid n))))
 
 (defonce ^:private query-vecs (atom {}))   ; [model text] → vector — a query asked again costs nothing
@@ -191,6 +195,13 @@
         g (locking (lock-of gid) (loaded st gid))]
     {:seq (:seq g)
      :events (vec (mapcat second (filter #(> (first %) (or after 0)) (:batches g))))}))
+
+(defn events-after-json
+  "`events-after` as JSON: the events tagged like the browser's IndexedDB
+   (graph-store/encode) — parsed natively there, ~2.5× faster than EDN."
+  [gid after]
+  (let [{s :seq evs :events} (events-after gid after)]
+    (str "{\"seq\":" s ",\"events\":" (json/write-str (mapv gs/encode evs)) "}")))
 
 (defn append!
   "Judge, project and store the events of a POST as one batch (those already

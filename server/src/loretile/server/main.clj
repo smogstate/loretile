@@ -9,7 +9,8 @@
      GET  /api/merges/?prefix=…   → the merge bucket listed as S3 XML
      GET  /api/merges/<key>       → one merge file
      GET  /api/graphs             → every server-kept graph (EDN)
-     GET  /api/graphs/<id>?after=n → {:seq :events} after batch n (0: all)
+     GET  /api/graphs/<id>?after=n[&format=json] → {:seq :events} after batch n (0: all); json: tagged like IndexedDB
+     GET  /api/graphs/<id>/rows → every current row as one JSON string (the browser builds its graph from it)
      POST /api/graphs/<id>/events → judge + store {:events [...] :after n};
                                     answers {:seq :stored :events :head} (what
                                     it lacked), or 422 {:error … :event id}
@@ -191,6 +192,7 @@
       "search" (send-json! ex 200 (json/write-str (graphs/search gid (query-param ex "q") (min 200 (max 1 (n "limit" 20)))
                                                                   (#{"verbatim" "semantic" "hybrid"} (query-param ex "mode")))))
       "changes" (send-json! ex 200 (json/write-str (graphs/changes-since gid (n "since" 0))))
+      "rows" (send-json! ex 200 (graphs/rows-json gid))
       (if-let [r (graphs/node gid node-id)]
         (send-json! ex 200 (json/write-str r))
         (send-text! ex 404 "no such node")))))
@@ -198,7 +200,7 @@
 (defn- graphs-api! [^HttpExchange ex]
   (let [method (.getRequestMethod ex)
         rel (subs (.getPath (.getRequestURI ex)) (count "/api/graphs"))
-        [_ gid tail node-id] (re-matches #"/?([^/]*)(?:/(events|structure|search|changes|nodes/(.+?)))?/?" rel)
+        [_ gid tail node-id] (re-matches #"/?([^/]*)(?:/(events|structure|search|changes|rows|nodes/(.+?)))?/?" rel)
         tail (if node-id "nodes" tail)]
     (cond
       (not (graphs/configured?)) (send-text! ex 404 "graphs url is not configured")
@@ -206,7 +208,10 @@
       (str/blank? gid) (if (= "GET" method) (send-edn! ex 200 (graphs/list-graphs)) (send-text! ex 405 "Method not allowed"))
       (not (graphs/valid-id? gid)) (send-text! ex 400 "bad graph id")
       (and (nil? tail) (= "GET" method))
-      (send-edn! ex 200 (graphs/events-after gid (some-> (query-param ex "after") parse-long)))
+      (let [after (some-> (query-param ex "after") parse-long)]
+        (if (= "json" (query-param ex "format"))
+          (send-json! ex 200 (graphs/events-after-json gid after))
+          (send-edn! ex 200 (graphs/events-after gid after))))
       (and (= "events" tail) (= "POST" method))
       (let [body (edn/read-string (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8))]
         (if (and (map? body) (sequential? (:events body)))
