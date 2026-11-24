@@ -2450,6 +2450,7 @@
        ;; in its own words; or the server was out of reach and the edits went back
        :server-refused (t :ui/error-server-refused {"{why}" (error-text detail)})
        :server-unreachable (t :ui/error-server-unreachable {"{n}" detail})
+       :store-refused (t :ui/error-store-refused {"{why}" (error-text detail)})
        :requires-cycle (t :ui/error-cycle {"{detail}" (pr-str detail)})
        :was-discarded (t :ui/error-discarded)
        :missing-endpoint (t :ui/error-missing-endpoint)

@@ -729,6 +729,7 @@
    :ui/error-server-refused {:ru "Сервер не принял правку — граф там уже другой: {why}" :de "Der Server hat die Änderung abgelehnt — der Graph ist dort schon anders: {why}" :en "The server refused this edit — the graph there has changed: {why}"}
    :ui/error-server-unreachable {:ru "Сервер недоступен — правки не сохранены ({n}). Проверьте соединение и повторите" :de "Server nicht erreichbar — Änderungen nicht gespeichert ({n}). Verbindung prüfen und erneut versuchen" :en "The server is out of reach — edits not saved ({n}). Check the connection and try again"}
    :ui/hood-note {:ru "Показаны {n} из {m} тем — рядом с «{title}». Нажмите тему, чтобы перейти к ней; Ctrl+K — найти любую" :de "{n} von {m} Themen — rund um „{title}“. Tippen Sie ein Thema an, um dorthin zu gehen; Strg+K findet jedes" :en "Showing {n} of {m} topics — around «{title}». Tap a topic to move there; Ctrl+K finds any"}
+   :ui/error-store-refused {:ru "Правка не принята — граф уже другой: {why}" :de "Die Änderung wurde nicht angenommen — der Graph ist schon anders: {why}" :en "The edit was not accepted — the graph has changed: {why}"}
    :ui/error-storage-full {:ru "Хранилище браузера переполнено — последнее изменение не сохранилось. Экспортируйте граф или удалите старые беседы"
                            :de "Browser-Speicher voll — die letzte Änderung wurde nicht gespeichert. Graph exportieren oder alte Gespräche löschen"
                            :en "Browser storage is full — the last change was not saved. Export the graph or remove old conversations"}

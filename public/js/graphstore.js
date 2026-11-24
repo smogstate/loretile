@@ -70,35 +70,82 @@ async function open() {
 }
 
 // row changes of consecutive events, one transaction: close what changes, insert the new rows
+// one event's row changes: close what changes, insert the new rows (inside a transaction)
+function applyOne(graph, c, fold) {
+  const seq = c.seq;
+  for (const id of c.removedNodes) {
+    const old = one(st.nodeNow, [graph, id]);
+    if (old) { run(st.closeNode, [seq, old[0]]); run(st.ftsDel, [old[0]]); }
+  }
+  for (const n of c.nodes) {
+    const old = one(st.nodeNow, [graph, n.id]);
+    if (old) { run(st.closeNode, [seq, old[0]]); run(st.ftsDel, [old[0]]); }
+    const [rowid] = one(st.insNode, [graph, n.id, seq, n.class, n.status, n.title, n.short, n.parent, n.text, n.text_hash, n.data]);
+    if (n.text) run(st.ftsIns, [rowid, n.text]);
+  }
+  for (const [from, type, to] of c.removedEdges) {
+    const old = one(st.edgeNow, [graph, from, type, to]);
+    if (old) run(st.closeEdge, [seq, old[0]]);
+  }
+  for (const e of c.edges) {
+    const old = one(st.edgeNow, [graph, e.from, e.type, e.to]);
+    if (old) run(st.closeEdge, [seq, old[0]]);
+    run(st.insEdge, [graph, e.from, e.type, e.to, seq, e.status, e.data]);
+  }
+  for (const k of c.discarded) run(st.discard, [graph, k, seq]);
+  run(st.head, [graph, seq, c.lastId, fold]);
+  if (c.heads != null) run(st.props, [c.heads, graph]);
+}
+
+// row changes of consecutive events, one transaction
 function apply({ graph, changes, fold }) {
-  db.transaction(() => {
-    for (const c of changes) {
-      const seq = c.seq;
-      for (const id of c.removedNodes) {
-        const old = one(st.nodeNow, [graph, id]);
-        if (old) { run(st.closeNode, [seq, old[0]]); run(st.ftsDel, [old[0]]); }
-      }
-      for (const n of c.nodes) {
-        const old = one(st.nodeNow, [graph, n.id]);
-        if (old) { run(st.closeNode, [seq, old[0]]); run(st.ftsDel, [old[0]]); }
-        const [rowid] = one(st.insNode, [graph, n.id, seq, n.class, n.status, n.title, n.short, n.parent, n.text, n.text_hash, n.data]);
-        if (n.text) run(st.ftsIns, [rowid, n.text]);
-      }
-      for (const [from, type, to] of c.removedEdges) {
-        const old = one(st.edgeNow, [graph, from, type, to]);
-        if (old) run(st.closeEdge, [seq, old[0]]);
-      }
-      for (const e of c.edges) {
-        const old = one(st.edgeNow, [graph, e.from, e.type, e.to]);
-        if (old) run(st.closeEdge, [seq, old[0]]);
-        run(st.insEdge, [graph, e.from, e.type, e.to, seq, e.status, e.data]);
-      }
-      for (const k of c.discarded) run(st.discard, [graph, k, seq]);
-      run(st.head, [graph, seq, c.lastId, fold]);
-      if (c.heads != null) run(st.props, [c.heads, graph]);
-    }
-  });
+  db.transaction(() => { for (const c of changes) applyOne(graph, c, fold); });
   return true;
+}
+
+// THE WORKER IS THE AUTHORITY (wiki/Graph-Store.md § Next, step 1b): events
+// appended to the open graph, judged here against SQLite — the fold runs here,
+// not in the page. Each accepted event is projected in its own transaction;
+// the first refusal stops: {applied: n, refused: edn} — the page takes it back.
+function appendEvents({ graph, events, from, fold }) {
+  const ms = { judge: 0, changes: 0, apply: 0 };
+  const lap = (k, f) => { const t = performance.now(); const r = f(); ms[k] += performance.now() - t; return r; };
+  for (let i = 0; i < events.length; i++) {
+    const v = lap('judge', () => judge(db, graph, events[i]));
+    if (v != null) return { applied: i, refused: v, ms };
+    const c = lap('changes', () => changesOf(db, graph, events[i], from + i + 1));
+    lap('apply', () => db.transaction(() => applyOne(graph, c, fold)));
+  }
+  return { applied: events.length, ms };
+}
+
+// the log as this origin's IndexedDB stores it (one record per event, keyed
+// [graph seq]) — read HERE: a rebuild costs the page nothing
+function readLog(graph) {
+  return new Promise((ok, no) => {
+    const r = indexedDB.open('loretile');
+    r.onerror = () => no(r.error);
+    r.onsuccess = () => {
+      const d = r.result;
+      if (!d.objectStoreNames.contains('events')) { d.close(); return ok([]); }
+      const q = d.transaction('events', 'readonly').objectStore('events').getAll(IDBKeyRange.bound([graph, 0], [graph, Infinity]));
+      q.onsuccess = () => { d.close(); ok(q.result); };
+      q.onerror = () => { d.close(); no(q.error); };
+    };
+  });
+}
+
+// a rebuild, all in the Worker: clear, read the log, fold every event against
+// what SQLite holds so far (no guard — the log was judged when it was written)
+async function rebuildFromLog({ graph, fold }) {
+  clear({ graph });
+  const evs = await readLog(graph);
+  for (let i = 0; i < evs.length; i += 1000) {
+    db.transaction(() => {
+      for (let k = i; k < Math.min(i + 1000, evs.length); k++) applyOne(graph, changesOf(db, graph, evs[k], k + 1), fold);
+    });
+  }
+  return { events: evs.length };
 }
 
 function head({ graph }) {
@@ -266,13 +313,13 @@ function verify({ events }) {
   } finally { clear({ graph }); }
 }
 
-const ops = { verify, open, apply, head, clear, structure, node, search, changesSince, dump, dumpJson, pending, putVectors, vectorsFor,
+const ops = { verify, appendEvents, rebuildFromLog, open, apply, head, clear, structure, node, search, changesSince, dump, dumpJson, pending, putVectors, vectorsFor,
   // the handover to another tab: release the access handles now
   pause: () => { pool && pool.pauseVfs(); return true; } };
 
 self.onmessage = async ({ data }) => {
   try {
-    if (data.op === 'apply' || data.op === 'clear' || data.op === 'putVectors') vcache && (vcache.stale = true);
+    if (['apply', 'clear', 'putVectors', 'appendEvents', 'rebuildFromLog'].includes(data.op)) vcache && (vcache.stale = true);
     self.postMessage({ id: data.id, ok: await ops[data.op](data) });
   } catch (e) {
     self.postMessage({ id: data.id, error: String((e && e.message) || e) });

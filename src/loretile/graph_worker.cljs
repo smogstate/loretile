@@ -6,6 +6,7 @@
    (shadow-cljs build :graphfold) that public/js/graphstore.js imports beside
    SQLite; it calls the database synchronously, as the fold expects."
   (:require [cljs.reader :as edn]
+            [clojure.string :as str]
             [loretile.fold :as fold]
             [loretile.graph-store :as gs]))
 
@@ -57,18 +58,23 @@
   (discarded? [_ k] (some? (value db "SELECT 1 FROM discarded WHERE graph=? AND key=?" graph (pr-str k))))
   (materialize [_] (gs/rows->kg (dump db graph))))
 
+(defn- read-ev
+  "An event as the page sends it (EDN) or as IndexedDB stores it (tagged JSON)."
+  [s]
+  (if (str/starts-with? s "{\"") (gs/<-json s) (edn/read-string s)))
+
 (defn ^:export judge
-  "The guard on event `ev` (EDN) against graph `graph` as SQLite holds it:
-   nil when it may be appended, else the refusal as EDN."
+  "The guard on event `ev` (EDN or stored JSON) against graph `graph` as
+   SQLite holds it: nil when it may be appended, else the refusal as EDN."
   [db graph ev]
-  (some-> (fold/guard-with (->SqliteReader db graph) (edn/read-string ev)) pr-str))
+  (some-> (fold/guard-with (->SqliteReader db graph) (read-ev ev)) pr-str))
 
 (defn ^:export changes
-  "Event `ev` (EDN) as row changes for SQLite, as event number `n` — the
-   shape graphstore.js `apply` takes."
+  "Event `ev` (EDN or stored JSON) as row changes for SQLite, as event number
+   `n` — the shape graphstore.js `applyOne` takes."
   [db graph ev n]
   (let [r (->SqliteReader db graph)
-        e (edn/read-string ev)
+        e (read-ev ev)
         ch (gs/changes (fold/delta r e) (fold/heads r) n)]
     #js {:seq n :lastId (:ev/id e)
          :nodes (clj->js (:nodes ch)) :removedNodes (clj->js (:removed-nodes ch))

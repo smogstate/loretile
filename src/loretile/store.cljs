@@ -61,7 +61,6 @@
 ;; the deltas of the events the incremental fold just applied, by event — the
 ;; browser's projection (graph_local) writes them as rows instead of folding
 ;; a second copy of the graph: {:graph id :items [[event delta heads-before] …]}
-(defonce recent-deltas (atom nil))
 (defonce ^:private befores (atom nil))   ; {:graph id :by [[event kg-before] …]} — the last 50 appends
 
 (defn kg []
@@ -76,7 +75,6 @@
                                   ;; [event delta heads-before graph-before]
                                   [(fold/apply-delta g d) (conj items [e d (select-keys g [:graph :profile :ontology :ontology-graph? :authors :owner]) g])]))
                               [v []] (subvec evs (count k)))]
-        (reset! recent-deltas {:graph @current :items (mapv #(subvec % 0 3) items)})
         ;; the graph just before each of the last 50 edits — what undo reads
         ;; (refolding the log up to the event took seconds at 40k)
         (swap! befores (fn [m] {:graph @current

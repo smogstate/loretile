@@ -47,68 +47,12 @@
 
 ;; --- row changes, shaped for the Worker ------------------------------------------
 
-(defn- js-changes [ch e]
-  #js {:seq (:seq ch) :lastId (:ev/id e)
-       :nodes (clj->js (:nodes ch)) :removedNodes (clj->js (:removed-nodes ch))
-       :edges (clj->js (:edges ch)) :removedEdges (clj->js (:removed-edges ch))
-       :discarded (clj->js (:discarded ch))
-       :heads (some-> (:heads ch) pr-str)})
-
-(defn- yield! [] (p/create (fn [ok _] (js/setTimeout ok 0))))
-
-(defn- rebuild!
-  "Fold all of `evs` into row changes, from nothing, in slices of ~25 ms that
-   give the page back in between (a rebuild of 130k events is long; the
-   screens must not wait for it). The graph it folds is thrown away after —
-   the page keeps one graph, the store's."
-  [gid evs]
-  (p/loop [k fold/empty-kg i 0]
-    (if (>= i (count evs))
-      true
-      (let [t0 (js/performance.now)
-            out #js []
-            [k' j] (loop [k k j i]
-                     (if (or (>= j (count evs)) (> (- (js/performance.now) t0) 25) (>= (.-length out) 2000))
-                       [k j]
-                       (let [e (nth evs j)
-                             d (fold/delta (fold/map-reader k) e)]
-                         (.push out (js-changes (gs/changes d (select-keys k gs/head-keys) (inc j)) e))
-                         (recur (fold/apply-delta k d) (inc j)))))]
-        (p/do (call :apply {:graph gid :changes out :fold (build-fold-of gid)})
-              (yield!)
-              (p/recur k' j))))))
-
-(defn- appended!
-  "The events of `evs` from `from` were just appended to the open graph: the
-   store's incremental fold computed their deltas (`store/recent-deltas`);
-   write them as rows. false when it has not (another graph, a past view) —
-   the caller rebuilds."
-  [gid evs from]
-  (when (and (= gid @store/current) (nil? @store/as-of) (identical? evs @store/events))
-    (store/kg)                                   ; folds the new events, recording their deltas
-    (let [{g :graph items :items} @store/recent-deltas
-          fresh (subvec evs from)]
-      (when (and (= g gid) (= (count items) (count fresh))
-                 (every? true? (map #(identical? (first %1) %2) items fresh)))
-        (call :apply {:graph gid :fold (build-fold-of gid)
-                      :changes (to-array (map-indexed (fn [i [e d h]] (js-changes (gs/changes d h (+ from i 1)) e)) items))})))))
-
-(defn- appended-by-fold!
-  "The log grew, but not by this page's own append (another tab's edit, a
-   reload): fold up to what the rows hold, then write only the new events —
-   one fold, not a rebuild."
-  [gid evs from]
-  (let [k (fold/kg (subvec evs 0 from))
-        [_ out] (reduce (fn [[k out] j]
-                          (let [e (nth evs j)
-                                d (fold/delta (fold/map-reader k) e)]
-                            [(fold/apply-delta k d) (doto out (.push (js-changes (gs/changes d (select-keys k gs/head-keys) (inc j)) e)))]))
-                        [k #js []] (range from (count evs)))]
-    (call :apply {:graph gid :changes out :fold (build-fold-of gid)})))
-
 (defn- sync-graph!
-  "Bring graph `gid`'s rows to log `evs`: nothing when they hold it, the new
-   events' deltas when the log only grew, a rebuild otherwise."
+  "Bring graph `gid`'s rows to log `evs` — the Worker does the folding
+   (wiki/Graph-Store.md § Next, step 1b): nothing when the rows hold the log;
+   the new events, JUDGED there against SQLite, when it only grew; otherwise
+   a rebuild, which the Worker reads from IndexedDB itself. A refusal takes
+   the edit (and what followed it) back out of the log, as server mode does."
   [gid evs]
   (let [t0 (js/performance.now)
         n (count evs)]
@@ -117,20 +61,29 @@
             same-prefix? (and h (= (build-fold-of gid) (.-fold h)) (<= seq-n n)
                               (or (zero? seq-n) (= (.-lastId h) (:ev/id (nth evs (dec seq-n))))))
             mode (cond (and same-prefix? (= seq-n n)) :current
-                       (and same-prefix? (appended! gid evs seq-n)) :append
-                       same-prefix? (p/do (appended-by-fold! gid evs seq-n) :append)
+                       same-prefix? :append
                        :else :rebuild)
-            ;; a rebuild right after boot waits for the page to settle: the first
-            ;; seconds are when a person starts working (a single huge event
-            ;; cannot be sliced); meanwhile search uses the in-memory graph
-            _ (when (= :rebuild mode)
-                (p/do (p/delay (max 0 (- 5000 (- (js/performance.now) started-at))))
-                      (call :clear {:graph gid}) (rebuild! gid evs)))]
-      (swap! synced assoc gid {:evs evs})
+            ^js r (case mode
+                    :current nil
+                    :append (call :appendEvents {:graph gid :from seq-n :fold (build-fold-of gid)
+                                                 :events (clj->js (map pr-str (subvec evs seq-n)))})
+                    ;; a rebuild right after boot waits for the page to settle: the
+                    ;; first seconds are when a person starts working
+                    :rebuild (p/do (p/delay (max 0 (- 5000 (- (js/performance.now) started-at))))
+                                   (call :rebuildFromLog {:graph gid :fold (build-fold-of gid)})))]
+      (if (and r (some? (.-refused r)))
+        ;; the Worker said no to what the page let through: it goes, with what followed
+        (let [at (+ seq-n (.-applied r))]
+          (when (= evs (store/graph-events gid))
+            (store/replace-log! gid (subvec evs 0 at)))
+          (reset! store/last-error {:error :store-refused :detail (cljs.reader/read-string (.-refused r))})
+          (swap! synced assoc gid {:evs (subvec evs 0 at)}))
+        (swap! synced assoc gid {:evs evs}))
       ;; «nothing to do» does not erase what the last sync of this graph did (a boot from rows)
       (when-not (and (= :current mode) (= gid (:graph @last-sync)))
         (reset! last-sync {:graph gid :mode mode :events (- n (if (= :rebuild mode) 0 seq-n))
-                           :ms (js/Math.round (- (js/performance.now) t0))}))
+                           :ms (js/Math.round (- (js/performance.now) t0))
+                           :worker (some-> r .-ms js->clj)}))
       mode)))
 
 (declare embed-pending!)
