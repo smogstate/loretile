@@ -2430,8 +2430,10 @@
                     (let [v (count (filter #(and (fold/publishable? kg %) (not (fold/stale? kg %))) ids))]
                       (reset! tracker-cache [kg v]) v)))]
     (r/with-let [open (r/atom false)]
-      (let [missing (sort-by :title (keep #(when-not (and (fold/publishable? kg %) (not (fold/stale? kg %)))
-                                              (get-in kg [:concepts %])) ids))]
+      ;; the list only when it is open: sorting 40k titles on every render cost 0.5 s an edit
+      (let [missing (when @open
+                      (sort-by :title (keep #(when-not (and (fold/publishable? kg %) (not (fold/stale? kg %)))
+                                               (get-in kg [:concepts %])) ids)))]
         [:span.tracker-wrap
          [:button.tracker {:aria-expanded @open :title (t :ui/tracker-open)
                            :on-click #(swap! open not)}
@@ -3190,9 +3192,13 @@
    Present only when some node has a property."
   []
   (r/with-let [open (r/atom false)]
-    (let [kg (store/kg) ks (prop-keys kg)
+    ;; present when ANY node has a property — a scan that stops at the first;
+    ;; the whole key list only once the menu opens (per edit it cost 0.25 s at 40k)
+    (let [kg (store/kg)
+          some-props? (some (fn [c] (some #(not (fold/node-core %)) (keys c))) (vals (:concepts kg)))
+          ks (when (or @open (:k @prop-filter)) (prop-keys kg))
           {fk :k fv :v} @prop-filter]
-      (when (seq ks)
+      (when some-props?
         [:div.filter-wrap
          [:button.rbtn.nav-filter {:title (t :ui/prop-filter) :aria-label (t :ui/prop-filter)
                                    :class (when (or @open fk) "on") :on-click #(swap! open not)}
