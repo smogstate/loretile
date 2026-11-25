@@ -43,7 +43,11 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     const r = g.getBoundingClientRect();
     return { x, y, gap, sx: r.x + r.width / 2, sy: r.y + r.height / 2 };
   });
-  await sleep(1500);
+  // grabbed once the layout has settled: at 1.5 s 400 nodes were still
+  // spreading and node 0 was sometimes off screen or moved under the pointer
+  // (a flaky FAIL, 2026-11-24). The drag reheats the sim, so its ticks still
+  // write the svg directly — what this checks.
+  await sleep(12000);
   const a = await probe();
   await page.mouse.move(a.sx, a.sy); await page.mouse.down();
   for (let i = 1; i <= 10; i++) { await page.mouse.move(a.sx + i * 15, a.sy + i * 8); await sleep(40); }

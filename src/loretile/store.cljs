@@ -486,7 +486,11 @@
   "Every graph folded — what the catalog spans. The author edits one graph
    at a time; the learner browses across all of them."
   []
-  (for [g @graphs] (assoc g :kg (fold/kg (graph-events (:id g))))))
+  ;; the open graph is the one already folded (`kg`): a refold per render
+  ;; held the catalog 5 s at 40k. ponytail: a shelved graph still folds on
+  ;; every call — cache it by log if a big one is ever shelved.
+  (for [g @graphs]
+    (assoc g :kg (if (and (= (:id g) @current) (nil? @as-of)) (kg) (fold/kg (graph-events (:id g)))))))
 
 (defn find-course
   "Which graph holds this course? Returns {:id :title :kg :course} or nil.

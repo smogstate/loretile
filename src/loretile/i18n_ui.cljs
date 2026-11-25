@@ -635,6 +635,7 @@
    :ui/chars-suffix {:ru " знаков" :de " Zeichen" :en " characters"}
    :ui/download-original {:ru "скачать оригинал" :de "Original herunterladen" :en "download original"}
    :ui/topics-on-source-heading {:ru " Темы на этом источнике" :de " Themen zu dieser Quelle" :en " Topics on this source"}
+   :ui/chips-more {:ru "…и ещё {n}" :de "…und {n} weitere" :en "…and {n} more"}
    :ui/lo-heading-plain {:ru " Учебные объекты" :de " Lernobjekte" :en " Learning objects"}
    :ui/text-heading {:ru " Текст" :de " Text" :en " Text"}
    :ui/loading-text {:ru "…читаю…" :de "…lese…" :en "…reading…"}

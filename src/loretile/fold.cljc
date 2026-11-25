@@ -1124,11 +1124,19 @@
       (publishable? kg id) :minimum-viable
       :else :accepted)))
 
+(defn- requires-of
+  "fn: node id → its :requires edges out, off the per-node edge index (built
+   once here when the kg has none) — grouping every edge per call held a
+   course over a 40k graph 0.65 s a render."
+  [kg]
+  (let [idx (edge-index kg) nbr (neighbour-index kg)]
+    (fn [id] (filter #(and (= :requires (:type %)) (= id (:from %))) (keep idx (get nbr id))))))
+
 (defn requires-closure
   "All concepts reachable upstream from targets via :requires (incl. targets).
    The plan's scope (simulation B, wiki/Data-Model.md)."
   [kg targets]
-  (let [req (group-by :from (filter #(= :requires (:type %)) (:edges kg)))]
+  (let [req (requires-of kg)]
     (loop [seen (set targets) frontier (vec targets)]
       (if-let [n (peek frontier)]
         (let [ups (remove seen (map :to (req n)))]
@@ -1142,7 +1150,7 @@
    needed at the dependent's level unless the edge sets :min-level; when
    two paths disagree the higher level wins."
   [kg targets]
-  (let [req (group-by :from (filter #(= :requires (:type %)) (:edges kg)))
+  (let [req (requires-of kg)
         rank #(level-rank % 0)]
     (loop [need (into {} targets) frontier (vec targets)]
       (if-let [[n lvl] (peek frontier)]

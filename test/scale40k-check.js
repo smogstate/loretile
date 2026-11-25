@@ -79,12 +79,19 @@ async function timed(label, budget, f) {
       // the form closes once the edit is stored (loretileLog prints the whole log: once, after)
       await page.waitForFunction(() => !document.querySelector('.modal input'), { timeout: 30000, polling: 100 });
     });
+    // the projection takes the edit first: loretileLog prints the whole log on
+    // the main thread (≈ 3 s at 40k), and a sync whose answer waits behind it
+    // measured 3.5 s instead of ≈ 0.6 s (2026-11-25)
+    const synced = () => page.waitForFunction(() => window.loretileGraphStore.current(), { timeout: 60000, polling: 100 });
+    await synced();
     check(/Новая тема масштаба/.test(await page.evaluate(() => loretileLog().slice(-3000))), 'the new topic is in the log');
 
     await timed('undo', 5000, async () => {
       await page.keyboard.down('Control'); await page.keyboard.press('z'); await page.keyboard.up('Control');
       await page.waitForFunction(() => /Отменено|отменено/.test((document.querySelector('.snack') || {}).textContent || ''), { timeout: 30000, polling: 100 });
     });
+    await synced();
+    times.store = await page.evaluate(() => window.loretileGraphStore.lastSync());
     check(/:node-remove/.test(await page.evaluate(() => loretileLog().slice(-800))), 'undo reverses it in the log');
 
     await timed('the graphs view', 3000, async () => {
@@ -97,7 +104,6 @@ async function timed(label, budget, f) {
       await page.waitForSelector('.composer', { timeout: 30000 });
     });
 
-    times.store = await page.evaluate(() => window.loretileGraphStore.lastSync());
     // retained, not garbage waiting for a collection
     const heap = await page.evaluate(() => { if (window.gc) gc(); return performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e6) : null; });
     console.log('heap MB', heap, 'times', JSON.stringify(times));

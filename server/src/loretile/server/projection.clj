@@ -26,6 +26,8 @@
      PRIMARY KEY (graph, id, from_seq))"
    "CREATE UNIQUE INDEX IF NOT EXISTS nodes_now    ON nodes (graph, id)     WHERE to_seq IS NULL"
    "CREATE INDEX        IF NOT EXISTS nodes_parent ON nodes (graph, parent) WHERE to_seq IS NULL"
+   ;; a class's nodes (all-of, written-from): without it a guard walked the graph (120 ms at 40k)
+   "CREATE INDEX        IF NOT EXISTS nodes_class  ON nodes (graph, class)  WHERE to_seq IS NULL"
    "CREATE INDEX        IF NOT EXISTS nodes_from   ON nodes (graph, from_seq)"
    ;; closed rows only — a plain (graph, to_seq) index is a planner trap (proof finding 1)
    "CREATE INDEX        IF NOT EXISTS nodes_closed ON nodes (graph, to_seq) WHERE to_seq IS NOT NULL"
@@ -148,10 +150,16 @@
   (edge [_ from type to] (edge-data db graph "accepted" from type to))
   (edge-proposal [_ from type to] (edge-data db graph "proposed" from type to))
   (link? [_ l] (some? (edge-data db graph "link" (:from l) (:type l) (:to l))))
+  ;; each end through its own index (edges_now, edges_to): an OR of the two
+  ;; ends walked every edge of the graph (an undo at 40k: 153 ms)
   (edges-of [_ id] (map (comp gs/row->edge first)
-                        (rows db "SELECT data FROM edges WHERE graph=? AND status='accepted' AND to_seq IS NULL AND (\"from\"=? OR \"to\"=?)" graph id id)))
+                        (rows db (str "SELECT data FROM edges WHERE graph=? AND \"from\"=? AND status='accepted' AND to_seq IS NULL"
+                                       " UNION ALL SELECT data FROM edges WHERE graph=? AND \"to\"=? AND \"from\"<>? AND status='accepted' AND to_seq IS NULL")
+                             graph id graph id id)))
   (links-of [_ id] (map (comp gs/row->edge first)
-                        (rows db "SELECT data FROM edges WHERE graph=? AND status='link' AND to_seq IS NULL AND (\"from\"=? OR \"to\"=?)" graph id id)))
+                        (rows db (str "SELECT data FROM edges WHERE graph=? AND \"from\"=? AND status='link' AND to_seq IS NULL"
+                                       " UNION ALL SELECT data FROM edges WHERE graph=? AND \"to\"=? AND \"from\"<>? AND status='link' AND to_seq IS NULL")
+                             graph id graph id id)))
   ;; ponytail: edges as {:from :to :type} off the columns, data not decoded —
   ;; all the cycle walk reads; at 40k a full decode per guard costs ~0.5 s.
   ;; Decode `data` here if the fold ever reads more of these edges.

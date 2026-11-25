@@ -294,8 +294,15 @@
     (when (not= sig (:sig @sim-state))
       (some-> (:sim @sim-state) (.stop))
       (let [old @positions
+            ;; a big graph re-centred: a topic joining the view starts beside a
+            ;; neighbour already there, not at a random spot — less to settle
+            near (when (big? kg)
+                   (fn [id] (some (fn [e] (let [o (if (= id (:from e)) (:to e) (:from e))]
+                                            (when-let [p (get old o)]
+                                              {:x (+ (:x (live p)) (- (rand-int 60) 30)) :y (+ (:y (live p)) (- (rand-int 60) 30))})))
+                                  (fold/edges-at kg id))))
             nodes (clj->js (map (fn [id] (merge {:id id}
-                                                (or (get old id)
+                                                (or (get old id) (when near (near id))
                                                     ;; a new node lands where the author is looking:
                                                     ;; the canvas centre put proposals half off a panned map
                                                     (let [{:keys [cx cy]} (or @vb {:cx (/ w 2) :cy (/ h 2)})]
@@ -336,6 +343,24 @@
                  (when small? (publish!))))
           (.on sim "end.publish" publish!)
           (publish!))
+        ;; a big graph's neighbourhood is laid out OFF SCREEN: the ticks run at
+        ;; once, nothing drawn between them, then the settled map is drawn and a
+        ;; short tail finishes it. Animated, 300 nodes were 4 s of frames and
+        ;; paint at 40k. The burst waits for the next paint: run here, the
+        ;; topic's page (same commit) waited ~0.5 s more behind it.
+        (when (big? kg)
+          (let [kept (count (filter #(contains? old %) ids))]
+            (.stop sim)
+            (js/requestAnimationFrame
+             #(js/setTimeout
+               (fn []
+                 (when (identical? sim (:sim @sim-state))
+                   (.tick sim (if (> kept (* 0.6 (count ids))) 30 120))
+                   (-> sim (.alpha 0.02) (.alphaDecay 0.1) (.restart))
+                   ;; d3's own decay back once the tail ends: a later drag settles as before
+                   (.on sim "end.tail" (fn [] (.on sim "end.tail" nil)
+                                         (.alphaDecay sim (- 1 (js/Math.pow 0.001 (/ 1 300))))))))
+               0))))
         (reset! sim-state {:sim sim :sig sig})
         ;; a graph seen for the first time (nothing survives from the old
         ;; positions) opens framed whole, not at 1:1 on its middle
@@ -1940,7 +1965,7 @@
                                "{d}" (or (gt/day (:changed-at c)) "")})])
          [:div.links
           (for [{:keys [to type] :as e} (filter #(and (= id (:from %)) (not= :grounded-in (:type %)))
-                                                (:edges kg))]
+                                                (fold/edges-at kg id))]
             ^{:key (str to type)}
             [:span.chip {:class (when (= @edge-open [id type to]) "on") :on-click #(goto! (str "#/c/" to))}
              (str (edge-label kg type) " → " (get-in kg [:concepts to :title] to))
@@ -1956,7 +1981,7 @@
           ;; and the filter showed it nothing (review 2026-10-16)
           (for [{:keys [from type] :as e} (filter #(and (= id (:to %))
                                                         (if (profile/learning? p) (= :requires (:type %)) (not= :grounded-in (:type %))))
-                                                  (:edges kg))]
+                                                  (fold/edges-at kg id))]
             ^{:key (str "in" from type)}
             [:span.chip.chip-in {:class (when (= @edge-open [from type id]) "on") :on-click #(goto! (str "#/c/" from))}
              (if (profile/learning? p)
@@ -2050,8 +2075,11 @@
       :reagent-render
       (fn [kg id anchor]
         (if-let [s (get-in kg [:sources id])]
-          (let [concepts (for [e (:edges kg) :when (and (= id (:to e)) (= :grounded-in (:type e)))] (:from e))
-                objects (filter #(= id (:grounded-in %)) (vals (:objects kg)))]
+          (let [concepts (distinct (for [e (fold/edges-at kg id) :when (and (= id (:to e)) (= :grounded-in (:type e)))] (:from e)))
+                objects (filter #(= id (:grounded-in %)) (vals (:objects kg)))
+                ;; a big source has thousands drafted from it: 52 000 chips held this page 5 s at 40k
+                shown 200
+                more (fn [xs] (when (> (count xs) shown) [:span.muted (t :ui/chips-more {"{n}" (- (count xs) shown)})]))]
             [:div.panel.source
              [:div.panel-head
               [win-title win-size (:title s)]
@@ -2061,15 +2089,17 @@
               (when @url [:<> " · " [:a {:href @url :download (:ref s)} (t :ui/download-original)]])]
              (when (seq concepts)
                [:<> [:h3 [icons/icon :notes] (t :ui/topics-on-source-heading)]
-                (for [cid (distinct concepts)]
+                (for [cid (take shown concepts)]
                   ^{:key cid} [:span.chip {:on-click #(goto! (str "#/c/" cid))}
-                               (get-in kg [:concepts cid :title] cid)])])
+                               (get-in kg [:concepts cid :title] cid)])
+                (more concepts)])
              (when (seq objects)
                [:<> [:h3 [icons/icon :notes] (t :ui/lo-heading-plain)]
-                (for [o objects]
+                (for [o (take shown objects)]
                   ^{:key (:id o)} [:span.chip {:on-click #(goto! (str "#/c/" (:concept-id o)))}
                                    (str (get-in kg [:concepts (:concept-id o) :title]) " · " (i18n/enum-label "okind" (:kind o))
-                                        (when (:anchor o) (str " · " (:anchor o))))])])
+                                        (when (:anchor o) (str " · " (:anchor o))))])
+                (more objects)])
              [:h3 [icons/icon :clip] (t :ui/text-heading)]
              (cond
                (nil? @text) [:p.muted (t :ui/loading-text)]
@@ -3187,18 +3217,30 @@
         (reset! prop-keys-cache [(:concepts kg) v])
         v))))
 
+(defonce ^:private some-props-cache (atom [nil nil]))
+
+(defn- some-props?
+  "Does any node carry a free property? A scan that stops at the first, kept
+   per topics value: with none it walked all 40k topics every render (0.2 s)."
+  [kg]
+  (let [[k v] @some-props-cache]
+    (if (identical? k (:concepts kg))
+      v
+      (let [v (boolean (some (fn [c] (some #(not (fold/node-core %)) (keys c))) (vals (:concepts kg))))]
+        (reset! some-props-cache [(:concepts kg) v])
+        v))))
+
 (defn- filter-btn
   "Dim every node whose property is not the chosen value (2026-11-20).
    Present only when some node has a property."
   []
   (r/with-let [open (r/atom false)]
-    ;; present when ANY node has a property — a scan that stops at the first;
-    ;; the whole key list only once the menu opens (per edit it cost 0.25 s at 40k)
+    ;; present when ANY node has a property (`some-props?`); the whole key
+    ;; list only once the menu opens (per edit it cost 0.25 s at 40k)
     (let [kg (store/kg)
-          some-props? (some (fn [c] (some #(not (fold/node-core %)) (keys c))) (vals (:concepts kg)))
           ks (when (or @open (:k @prop-filter)) (prop-keys kg))
           {fk :k fv :v} @prop-filter]
-      (when some-props?
+      (when (some-props? kg)
         [:div.filter-wrap
          [:button.rbtn.nav-filter {:title (t :ui/prop-filter) :aria-label (t :ui/prop-filter)
                                    :class (when (or @open fk) "on") :on-click #(swap! open not)}

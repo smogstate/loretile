@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS nodes (graph TEXT, id TEXT, from_seq INTEGER, to_seq 
   PRIMARY KEY (graph, id, from_seq));
 CREATE UNIQUE INDEX IF NOT EXISTS nodes_now    ON nodes (graph, id)     WHERE to_seq IS NULL;
 CREATE INDEX        IF NOT EXISTS nodes_parent ON nodes (graph, parent) WHERE to_seq IS NULL;
+-- a class's nodes (all-of, written-from): without it a guard walked the graph (120 ms at 40k)
+CREATE INDEX        IF NOT EXISTS nodes_class  ON nodes (graph, class)  WHERE to_seq IS NULL;
 CREATE INDEX        IF NOT EXISTS nodes_from   ON nodes (graph, from_seq);
 -- closed rows only: a plain (graph, to_seq) index also matches "to_seq IS NULL"
 -- and the planner then prefers it to the right one (proof: node open 75 ms)
