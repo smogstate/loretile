@@ -83,7 +83,9 @@ fs.writeFileSync(FIXTURE, Array.from({ length: 12 }, (_, i) =>
   await sleep(300);
 
   const prog = await page.$eval('.intake-progress', (e) => e.textContent).catch(() => '');
-  check(/стр\. 1–\d+ · ищу темы · 1\/2/.test(prog), 'progress names the pages, the step and the part: ' + prog);
+  // either step of part 1: on a loaded machine (make checks, 8 at a time) the
+  // triage takes longer and the 700 ms topics answer is already in (2026-11-25)
+  check(/стр\. 1–\d+ · (ищу темы|оцениваю связи) · 1\/2/.test(prog), 'progress names the pages, the step and the part: ' + prog);
   check(await page.$('.intake-progress .bar') !== null && await page.$('.intake-progress .stop') !== null,
     'progress bar and stop button while reading');
   await page.screenshot({ path: 'test/shot-intake-progress.png' });

@@ -320,10 +320,15 @@ const ops = { verify, appendEvents, rebuildFromLog, open, apply, head, clear, st
   pause: () => { pool && pool.pauseVfs(); return true; } };
 
 self.onmessage = async ({ data }) => {
+  const writes = ['apply', 'clear', 'putVectors', 'appendEvents', 'rebuildFromLog'].includes(data.op);
   try {
-    if (['apply', 'clear', 'putVectors', 'appendEvents', 'rebuildFromLog'].includes(data.op)) vcache && (vcache.stale = true);
+    if (writes) vcache && (vcache.stale = true);
     self.postMessage({ id: data.id, ok: await ops[data.op](data) });
   } catch (e) {
     self.postMessage({ id: data.id, error: String((e && e.message) || e) });
+  } finally {
+    // stale AGAIN once it is done: a search answered while a rebuild awaited
+    // its log cached the half-cleared graph and cleared the flag
+    if (writes) vcache && (vcache.stale = true);
   }
 };

@@ -294,15 +294,21 @@
     (when (not= sig (:sig @sim-state))
       (some-> (:sim @sim-state) (.stop))
       (let [old @positions
+            ;; where a kept node IS: its live spot (a big graph publishes only
+            ;; once settled — a re-centre mid-layout restarted from stale spots),
+            ;; without `:node`, or each new d3 node held the previous one: a
+            ;; chain growing with every re-centre
+            kept-at (fn [id] (some-> (get old id) live (dissoc :node)))
             ;; a big graph re-centred: a topic joining the view starts beside a
-            ;; neighbour already there, not at a random spot — less to settle
+            ;; neighbour KEPT in it, not at a random spot — less to settle (a
+            ;; neighbour that left the view sat far from the new cluster)
             near (when (big? kg)
                    (fn [id] (some (fn [e] (let [o (if (= id (:from e)) (:to e) (:from e))]
-                                            (when-let [p (get old o)]
-                                              {:x (+ (:x (live p)) (- (rand-int 60) 30)) :y (+ (:y (live p)) (- (rand-int 60) 30))})))
+                                            (when-let [{:keys [x y]} (and (in? o) (kept-at o))]
+                                              {:x (+ x (- (rand-int 60) 30)) :y (+ y (- (rand-int 60) 30))})))
                                   (fold/edges-at kg id))))
             nodes (clj->js (map (fn [id] (merge {:id id}
-                                                (or (get old id) (when near (near id))
+                                                (or (kept-at id) (when near (near id))
                                                     ;; a new node lands where the author is looking:
                                                     ;; the canvas centre put proposals half off a panned map
                                                     (let [{:keys [cx cy]} (or @vb {:cx (/ w 2) :cy (/ h 2)})]

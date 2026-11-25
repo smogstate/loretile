@@ -81,6 +81,15 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   const md = await page.evaluate(() => (window.__blob ? window.__blob.text() : ''));
   check(/## Ещё одна `[^`]+`\n- type: concept\n- added by Анна К\.; last changed by Анна К\. on \d{4}-\d\d-\d\d/.test(md), 'the agent export names the author of each topic');
 
+  // undo passes over a naming: its reverse names others, which the guard
+  // refuses — undo stuck there for the session (code review 2026-11-25)
+  // (the FIRST naming's reverse is {:authors nil}): undo the whole session —
+  // it must reach the very first topic, made before any name
+  const n = await page.evaluate(() => { let k = 0; while (k < 20 && loretile.store.undo_BANG_()) k++; return k; });
+  const err = await page.evaluate(() => cljs.core.pr_str(cljs.core.deref(loretile.store.last_error)));
+  check(err === 'nil' && new RegExp(`:node-remove "${tid}"`).test((await log()).slice(-600)),
+    `undo passes over both namings back to the first topic (${n} undos, error ${err})`);
+
   await browser.close();
   console.log(failures ? 'AUTHOR CHECK FAILED' : 'AUTHOR CHECK OK');
   process.exit(failures ? 1 : 0);

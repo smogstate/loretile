@@ -488,9 +488,14 @@
   []
   ;; the open graph is the one already folded (`kg`): a refold per render
   ;; held the catalog 5 s at 40k. ponytail: a shelved graph still folds on
-  ;; every call — cache it by log if a big one is ever shelved.
-  (for [g @graphs]
-    (assoc g :kg (if (and (= (:id g) @current) (nil? @as-of)) (kg) (fold/kg (graph-events (:id g)))))))
+  ;; every call, and the open one in the past view — cache by log if either
+  ;; ever shows up. Atoms read HERE, never inside the lazy `for` (a render
+  ;; that realised it later would not subscribe to them).
+  (let [cur @current open-evs @events head (when (nil? @as-of) (kg)) shelved @shelf]
+    (for [g @graphs]
+      (assoc g :kg (cond (and head (= (:id g) cur)) head
+                         (= (:id g) cur) (fold/kg open-evs)
+                         :else (fold/kg (get shelved (:id g) [])))))))
 
 (defn find-course
   "Which graph holds this course? Returns {:id :title :kg :course} or nil.
@@ -577,7 +582,9 @@
                 (some-> @on-append (apply [@current e]))
                 ;; an edit undo can reverse goes on this graph's stack; a fresh
                 ;; edit forgets what was undone (redo only follows undo)
-                (when (and (not @replaying?) (fold/undoable? e))
+                ;; never the author's naming: its reverse names others (or
+                ;; nothing), which the guard refuses — undo stuck there for good
+                (when (and (not @replaying?) (fold/undoable? e) (not (naming? e)))
                   (swap! undo-stack update @current (fnil conj []) (:ev/id e))
                   (swap! redo-stack dissoc @current))
                 ;; an ontology graph's change flows into the graphs bound to it
@@ -597,7 +604,9 @@
    success, the guard error otherwise (or false when storage refused)."
   [gid e]
   (let [evs (graph-events gid)]
-    (or (fold/guard (fold/kg evs) e)
+    ;; the open graph is already folded (`kg`, outside the past view): a
+    ;; refold per write held a rename of a 40k graph seconds
+    (or (fold/guard (if (and (= gid @current) (nil? @as-of)) (kg) (fold/kg evs)) e)
         (let [evs (conj evs e)
               err (if (= gid @current)
                     (do (reset! events evs) (when-not (persist!) (swap! events pop) false))
@@ -772,22 +781,24 @@
    and stays on its version (`sync-refused` says why)."
   [oid]
   (when-let [e (copy-event oid)]
-    (doseq [{:keys [id]} (filter #(= oid (:ontology %)) @graphs)
-            :let [k (fold/kg (graph-events id))
-                  v (get-in k [:ontology :version])]
-            :when (not= v (get-in e [:ops 0 1 :ontology-version]))]
-      ;; a RENAMED relation (2026-11-20): the graph's own links move to the new
-      ;; id in the same change that takes the copy — never a stuck graph
-      (let [renames (get-in (fold/kg (graph-events oid)) [:graph :relation-renames])
-            now (set (map :id (get-in e [:ops 0 1 :ontology-copy :relations])))
-            follow (fn [r] (loop [r r seen #{}] (if-let [n (and (not (seen r)) (get renames r))] (recur n (conj seen r)) r)))
-            plan (into {} (for [{:keys [type]} (:edges k)
-                                :let [n (follow type)]
-                                :when (and (not= n type) (now n) (not (now type)))]
-                            [type n]))
-            e (update e :ops (fn [ops] (vec (concat ops (relink-ops k plan)))))
-            err (append-to-log! id (assoc e :ev/ns id :ev/id (str (random-uuid))))]
-        (swap! sync-refused (if (and err (:error err)) #(assoc % id err) #(dissoc % id)))))))
+    ;; the ontology graph folded once, not once per bound graph
+    (let [renames (delay (get-in (fold/kg (graph-events oid)) [:graph :relation-renames]))]
+      (doseq [{:keys [id]} (filter #(= oid (:ontology %)) @graphs)
+              :let [k (fold/kg (graph-events id))
+                    v (get-in k [:ontology :version])]
+              :when (not= v (get-in e [:ops 0 1 :ontology-version]))]
+        ;; a RENAMED relation (2026-11-20): the graph's own links move to the new
+        ;; id in the same change that takes the copy — never a stuck graph
+        (let [renames @renames
+              now (set (map :id (get-in e [:ops 0 1 :ontology-copy :relations])))
+              follow (fn [r] (loop [r r seen #{}] (if-let [n (and (not (seen r)) (get renames r))] (recur n (conj seen r)) r)))
+              plan (into {} (for [{:keys [type]} (:edges k)
+                                  :let [n (follow type)]
+                                  :when (and (not= n type) (now n) (not (now type)))]
+                              [type n]))
+              e (update e :ops (fn [ops] (vec (concat ops (relink-ops k plan)))))
+              err (append-to-log! id (assoc e :ev/ns id :ev/id (str (random-uuid))))]
+          (swap! sync-refused (if (and err (:error err)) #(assoc % id err) #(dissoc % id))))))))
 
 (defn- vocabulary-ops
   "A vocabulary written as an ontology graph's nodes and edges — what an

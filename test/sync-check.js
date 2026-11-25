@@ -146,6 +146,19 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await B.reload({ waitUntil: 'networkidle0' }); await sleep(800);
     check(!/не подтверждено/.test(await log(B)) && !/не подтверждено/.test(await onServer(gid)), 'after a reload the unconfirmed edit is gone — unconfirmed is unsaved');
 
+    // a graph that never synced is local work, not a provisional edit: its first
+    // push failing must not empty it (code review 2026-11-25: it erased the log)
+    await B.evaluate(() => { window.__fetch = window.fetch;
+      window.fetch = (u, o) => String(u).includes('api/graphs') ? Promise.reject(new TypeError('offline')) : window.__fetch(u, o); });
+    const local = await B.evaluate(() => loretile.store.new_graph_BANG_('Местный граф'));
+    await append(B, `{:ev/type :change :ops [[:node-set "loc-1" {:title "Своё"}]]}`);
+    await sleep(800);
+    check(/Своё/.test(await log(B)), 'a never-synced graph keeps its log when its first push cannot reach the server');
+    await B.evaluate(() => { window.fetch = window.__fetch; cljs.core.reset_BANG_(loretile.store.last_error, null); });
+    await syncNow(B);
+    check(/Своё/.test(await onServer(local)), 'and the next sync uploads it');
+    await B.evaluate((g) => loretile.store.switch_graph_BANG_(g), gid);
+
     // an ONTOLOGY changed on one device reaches the graphs bound to it on another
     // (2026-11-20): B pulls the ontology graph, and its own bound graph takes the copy
     const made = await A.evaluate(() => {

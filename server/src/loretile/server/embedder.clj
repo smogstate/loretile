@@ -66,14 +66,21 @@
                           (do (token/invalidate! (:gen tok)) (send (token/current)))
                           r)]
     (when-not (= 200 (.statusCode r))
-      (throw (ex-info (str "the gateway answered " (.statusCode r)) {})))
+      (throw (ex-info (str "the gateway answered " (.statusCode r)) {:status (.statusCode r)})))
     (->> (get (json/read-str (.body r)) "data") (sort-by #(get % "index")) (mapv #(get % "embedding")))))
 
 (defn embed!
   "texts → vectors, or nil when no model is configured or the cap refuses."
   [db texts]
   (when (and (model) (seq texts) (admit! db texts))
-    (post! texts)))
+    ;; the gateway answered and refused (a status, no vectors): nothing was
+    ;; embedded — the tokens go back, or a gateway down for minutes, or one
+    ;; text it always refuses, spent the day's cap on retries. A call that
+    ;; failed on the way (no status) stays counted: it may have been billed.
+    (try (post! texts)
+         (catch clojure.lang.ExceptionInfo e
+           (when (:status (ex-data e)) (proj/spend! db (today) (- (tokens texts))))
+           (throw e)))))
 
 (defn- run-once!
   "Embed pending texts batch by batch until none are left or the cap stops it."
@@ -83,6 +90,10 @@
       (let [p (proj/pending db m 64)]
         (when (seq p)
           (when-let [vs (embed! db (map second p))]
+            ;; fewer vectors than texts left some pending, and the loop asked
+            ;; for them again at once — the cap gone in seconds
+            (when (not= (count vs) (count p))
+              (throw (ex-info (str "the gateway returned " (count vs) " vectors for " (count p) " texts") {})))
             (proj/put-vectors! db m (map vector (map first p) vs))
             (recur)))))))
 
@@ -91,8 +102,10 @@
   [db]
   (Thread/startVirtualThread
    (fn []
-     (loop []
-       (try (when (model) (run-once! @db))
-            (catch Exception e (log "embedding failed, retried later:" (ex-message e))))
-       (Thread/sleep 5000)
-       (recur)))))
+     ;; every 5 s; after a failure the wait doubles, up to 10 minutes
+     (loop [wait 5000]
+       (let [ok? (try (when (model) (run-once! @db)) true
+                      (catch Exception e (log "embedding failed, retried in" (quot (min 600000 (* 2 wait)) 1000) "s:" (ex-message e)) false))
+             wait (if ok? 5000 (min 600000 (* 2 wait)))]
+         (Thread/sleep wait)
+         (recur wait))))))

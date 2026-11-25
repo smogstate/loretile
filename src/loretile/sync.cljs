@@ -13,8 +13,9 @@
    the server's batch seq, and how many events of the local log the server
    holds (a prefix). A provisional edit never survives a reload: at boot a
    log longer than its confirmed prefix is cut back. A graph with no entry
-   has never synced: its whole log is provisional, and its first push
-   uploads it."
+   has never synced: its whole log goes up with its first push — and stays
+   on the device when that push fails (it is local work, not a provisional
+   edit: taking it back emptied a demo or an imported graph on a blip)."
   (:require [cljs.reader :as reader]
             [loretile.fold :as fold]
             [loretile.graph-store :as gs]
@@ -118,12 +119,16 @@
                                 (p/catch (fetch-text (str path "/rows")) (constantly nil))])
             ^js d (js/JSON.parse text)
             events (persistent! (reduce (fn [v e] (conj! v (gs/decode-js e))) (transient []) (.-events d)))]
-      (when (store/add-server-graph! meta events)
+      ;; the entry FIRST: opening the graph fires the open-graph watch, whose
+      ;; sync with no entry fetched the whole log again (as EDN, 2.5× slower)
+      (let [prev (get @sync-state id)]
         (swap! sync-state assoc id {:seq (.-seq d) :confirmed (count events)})
-        (save!)
-        (when rows (try (seed-from-rows! (store/graph-events id) rows)
-                        (catch :default e (js/console.warn "loretile: graph from the server's rows failed:" (ex-message e)))))
-        id))))
+        (if (store/add-server-graph! meta events)
+          (do (save!)
+              (when rows (try (seed-from-rows! (store/graph-events id) rows)
+                              (catch :default e (js/console.warn "loretile: graph from the server's rows failed:" (ex-message e)))))
+              id)
+          (do (swap! sync-state (fn [st] (if prev (assoc st id prev) (dissoc st id)))) nil))))))
 
 (defn boot-kg!
   "Boot, a big log already on this device: built from the server's rows when
@@ -216,11 +221,13 @@
                              (reset! store/last-error {:error :server-refused :detail (:error body)})
                              (swap! again conj gid)
                              (swap! status assoc gid :ok))
-                         ;; out of reach: nothing provisional may stay (no offline)
+                         ;; out of reach: nothing provisional may stay (no offline) —
+                         ;; but a graph never synced keeps its log for the next cycle
                          (let [n (- (count (store/graph-events gid)) (:confirmed (entry gid)))]
                            (js/console.warn "loretile sync" gid (ex-message e))
-                           (take-back! gid nil)
-                           (when (pos? n) (reset! store/last-error {:error :server-unreachable :detail n}))
+                           (when (contains? @sync-state gid)
+                             (take-back! gid nil)
+                             (when (pos? n) (reset! store/last-error {:error :server-unreachable :detail n})))
                            (swap! status assoc gid :offline)))
                        nil)))
           (p/finally (fn []

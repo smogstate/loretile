@@ -76,7 +76,10 @@
               (io/make-parents f)
               ;; written aside, then renamed: a half-written batch is never read
               (spit tmp text :encoding "UTF-8")
-              (.renameTo tmp f))
+              ;; renameTo says false, it does not throw: unchecked, the client
+              ;; was told «stored» for a batch that was never written
+              (when-not (.renameTo tmp f)
+                (throw (ex-info (str "could not store batch " (batch-name n) " of " gid) {}))))
       :s3 (s3/put-object! aws bucket (s3/join-key key (str gid "/" (batch-name n)))
                           (.getBytes text StandardCharsets/UTF_8) "application/edn; charset=utf-8"))))
 
