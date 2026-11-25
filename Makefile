@@ -98,7 +98,9 @@ endef
 dist: release
 	@rm -rf $(DIST) $(DIST).zip && mkdir -p $(DIST)/demo
 	$(call app-files,$(DIST))
-	@cp public/index.html $(DIST)/
+	@# the version the drawer shows (ui/app-version): without it every release said «v dev»
+	@sed 's|<meta charset="utf-8">|<meta charset="utf-8">\n<meta name="loretile-version" content="$(VERSION)">|' public/index.html > $(DIST)/index.html
+	@grep -q '<meta name="loretile-version" content="$(VERSION)">' $(DIST)/index.html || { echo "index.html: the version was not written"; exit 1; }
 	@for d in $(DEMOS); do for l in $(LOCALES); do cp kg/demo/$$d.$$l.edn $(DIST)/demo/ || exit 1; done; done
 	@printf 'Loretile %s\n\nServe this directory with any static web server, e.g.\n  python3 -m http.server 8000\nthen open http://localhost:8000/ — it also works under a sub-path.\nThe PGlite and Pyodide engines (js/pglite, js/pyodide) run exercises in the browser.\n' "$(VERSION)" > $(DIST)/README.txt
 	@cd dist && zip -qr loretile-app-$(VERSION).zip loretile-app-$(VERSION)
@@ -113,7 +115,7 @@ DIST_E := $(DIST)-enterprise
 dist-enterprise: release
 	@rm -rf $(DIST_E) $(DIST_E).zip
 	$(call app-files,$(DIST_E))
-	@sed 's|<meta charset="utf-8">|<meta charset="utf-8">\n<meta name="loretile-demos" content="off">|' public/index.html > $(DIST_E)/index.html
+	@sed 's|<meta charset="utf-8">|<meta charset="utf-8">\n<meta name="loretile-version" content="$(VERSION)">\n<meta name="loretile-demos" content="off">|' public/index.html > $(DIST_E)/index.html
 	@grep -q '<meta name="loretile-demos" content="off">' $(DIST_E)/index.html || { echo "index.html: the demo switch was not written"; exit 1; }
 	@printf 'Loretile %s — without demo graphs\n\nServe this directory with any static web server, e.g.\n  python3 -m http.server 8000\nthen open http://localhost:8000/ — it also works under a sub-path.\nThe PGlite and Pyodide engines (js/pglite, js/pyodide) run exercises in the browser.\nindex.html carries <meta name="loretile-demos" content="off">: the app offers no demo graphs.\nEverything stays in the browser that uses it; the only outbound calls go to the model\nprovider configured in Settings.\n' "$(VERSION)" > $(DIST_E)/README.txt
 	@cd dist && zip -qr loretile-app-$(VERSION)-enterprise.zip loretile-app-$(VERSION)-enterprise

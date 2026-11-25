@@ -2695,9 +2695,13 @@
       [:div.row [:button {:on-click #(reset! demo-picker-open false)} (t :ui/cancel)]]]]))
 
 (defn- app-version
-  "Deploy stamp from the cache-busted bundle name (main-<sha>.js); dev otherwise."
+  "The release a bundle was built as (`make dist` stamps
+   <meta name=\"loretile-version\"> — a zip, a tar.gz, the Docker image), else
+   the deploy's cache-busted bundle name (main-<sha>.js), else dev. Without the
+   meta every release said «v dev» (2026-11-25)."
   []
-  (or (some->> (js/document.querySelector "script[src*='main']") (.-src)
+  (or (some-> (js/document.querySelector "meta[name='loretile-version']") (.getAttribute "content") not-empty)
+      (some->> (js/document.querySelector "script[src*='main']") (.-src)
                (re-find #"main-([a-z0-9+]+)\.js") second)
       "dev"))
 

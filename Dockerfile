@@ -24,7 +24,9 @@ COPY shadow-cljs.edn Makefile ./
 COPY src src
 COPY public public
 COPY kg/demo kg/demo
-RUN make dist VERSION=app && mv dist/loretile-app-app /out-public
+# the release this image is (build.yml passes it): the drawer shows it
+ARG VERSION=dev
+RUN make dist VERSION=$VERSION && mv dist/loretile-app-$VERSION /out-public
 
 # the server loads the shared cljc from ../src (fold, graph-store, schema,
 # profile) and hashes four of them at start (a changed fold rebuilds the
