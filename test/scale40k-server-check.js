@@ -2,7 +2,7 @@
 // (default 40 000) stored as one batch, a server on a temp dir, then timed in a
 // browser: opening it from «На сервере» (the log as JSON + the graph built from
 // the server's rows) and a later boot (the graph from the server's rows again).
-// Asserts the graph built from rows is exactly the fold of the log. Measures —
+// Asserts the browser's graph is exactly the server's (it keeps no log). Measures —
 // not in `make checks`. Usage (a built bundle in public/): node test/scale40k-server-check.js [N]
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs'); const os = require('os'); const path = require('path');
@@ -44,7 +44,9 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await page.waitForFunction(() => document.querySelectorAll('svg.graph .node').length > 0, { timeout: 600000, polling: 250 });
     const open = Date.now() - t;
     check(open < 30000, `opening it from «На сервере» → the map: ${open} ms`);
-    check(await page.evaluate(() => window.loretileGraphStore.appGraphIsFold()), 'the graph built from the server\'s rows is exactly the fold of the log');
+    // backend mode keeps no log in the browser (wiki/Graph-Store.md § Backend mode):
+    // the graph must be the server's exactly
+    check(await page.evaluate(() => window.loretileAppGraphIsServers()), 'the browser\'s graph is exactly the server\'s rows (no log kept here)');
     await sleep(3000);
     t = Date.now();
     await page.goto(BASE + 'icon.svg'); await page.goto(BASE, { waitUntil: 'domcontentloaded' });

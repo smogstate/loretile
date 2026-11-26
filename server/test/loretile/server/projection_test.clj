@@ -3,7 +3,8 @@
    kg/, replayed into SQLite, reads back (graph-store/rows->kg of the current
    rows) as the fold's own graph; the guard through the tables refuses what
    the guard over the folded graph refuses. Run: `cd server && clojure -M:test`."
-  (:require [clojure.edn :as edn]
+  (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing run-tests]]
             [loretile.fold :as fold]
@@ -77,6 +78,26 @@
         (is (some? (:error (proj/append! db g n [e1 e2] (fn [])))) "n1→n2 then n2→n1: refused whole")
         (is (nil? (proj/append! db g n [e3] (fn []))) "n2→n1 alone is fine: n1→n2 was never stored")
         (is (some? (:error (proj/append! db g (inc n) [e4] (fn [])))) "and now n1→n2 closes a cycle")))))
+
+;; the server's view of a FILTERED log (graphs/view) answers a folded kg in the
+;; dump's shape: read back as rows, it must be the fold's own graph
+(defn- read-dump [s]
+  (let [d (json/read-str s)]
+    {:nodes (for [[id c data] (get d "nodes")] [id c (json/write-str data)])
+     :edges (for [[st data] (get d "edges")] [st (json/write-str data)])
+     :discarded (get d "discarded")
+     :heads (edn/read-string (get d "heads"))}))
+
+(deftest a-folded-graph-dumps-and-reads-back
+  (doseq [path logs :let [evs (read-log path) kg (fold/kg evs)]]
+    (is (= (comparable kg) (comparable (gs/rows->kg (read-dump (proj/kg->dump-json kg {}))))) path))
+  (testing "a learner pinned at a publication: the graph of fold/events-at, read back"
+    (let [evs (read-log "../kg/demo/sql.ru.edn")
+          course (first (keys (:courses (fold/kg evs))))
+          cut (fold/publication-cut evs course)
+          kg (fold/kg (fold/events-at evs cut))]
+      (is (some? cut))
+      (is (= (comparable kg) (comparable (gs/rows->kg (read-dump (proj/kg->dump-json kg {"cut" cut})))))))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'loretile.server.projection-test)]

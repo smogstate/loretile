@@ -11,6 +11,8 @@
      GET  /api/graphs             → every server-kept graph (EDN)
      GET  /api/graphs/<id>?after=n[&format=json] → {:seq :events} after batch n (0: all); json: tagged like IndexedDB
      GET  /api/graphs/<id>/rows → every current row as one JSON string (the browser builds its graph from it)
+     GET  /api/graphs/<id>/view?course=&pin= | ?valid=&recorded= → the graph folded from a filtered log
+          (a pinned learner's, the past view) in /rows' shape, + cut, newest, changes
      POST /api/graphs/<id>/events → judge + store {:events [...] :after n};
                                     answers {:seq :stored :events :head} (what
                                     it lacked), or 422 {:error … :event id}
@@ -193,6 +195,11 @@
                                                                   (#{"verbatim" "semantic" "hybrid"} (query-param ex "mode")))))
       "changes" (send-json! ex 200 (json/write-str (graphs/changes-since gid (n "since" 0))))
       "rows" (send-json! ex 200 (graphs/rows-json gid))
+      "view" (send-json! ex 200 (graphs/view gid (cond-> {}
+                                                    (query-param ex "course") (assoc :course (query-param ex "course"))
+                                                    (query-param ex "pin") (assoc :pin (query-param ex "pin"))
+                                                    (n "valid" nil) (assoc :valid (n "valid" nil))
+                                                    (n "recorded" nil) (assoc :recorded (n "recorded" nil)))))
       (if-let [r (graphs/node gid node-id)]
         (send-json! ex 200 (json/write-str r))
         (send-text! ex 404 "no such node")))))
@@ -200,7 +207,7 @@
 (defn- graphs-api! [^HttpExchange ex]
   (let [method (.getRequestMethod ex)
         rel (subs (.getPath (.getRequestURI ex)) (count "/api/graphs"))
-        [_ gid tail node-id] (re-matches #"/?([^/]*)(?:/(events|structure|search|changes|rows|nodes/(.+?)))?/?" rel)
+        [_ gid tail node-id] (re-matches #"/?([^/]*)(?:/(events|structure|search|changes|rows|view|nodes/(.+?)))?/?" rel)
         tail (if node-id "nodes" tail)]
     (cond
       (not (graphs/configured?)) (send-text! ex 404 "graphs url is not configured")

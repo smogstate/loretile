@@ -17,6 +17,7 @@
    on the device when that push fails (it is local work, not a provisional
    edit: taking it back emptied a demo or an imported graph on a blip)."
   (:require [cljs.reader :as reader]
+            [clojure.string :as str]
             [loretile.fold :as fold]
             [loretile.graph-store :as gs]
             [loretile.llm :as llm]
@@ -99,57 +100,95 @@
   (-> (js/fetch (str "api/graphs" path))
       (p/then (fn [^js r] (if (.-ok r) (.text r) (p/rejected (ex-info (str "HTTP " (.-status r)) {:status (.-status r)})))))))
 
-(defn- seed-from-rows!
-  "The open graph built from the server's rows (`rows`: one JSON string, the
-   projection's current rows) when they hold exactly its log `evs` — no
-   replay of the log in this browser (wiki/Graph-Store.md). true when seeded."
-  [evs rows]
-  (let [^js d (js/JSON.parse rows)]
-    (and (= (.-head d) (count evs)) (pos? (count evs)) (= (.-lastId d) (:ev/id (peek evs)))
-         (store/seed-kg! evs (gs/kg-from-dump rows)))))
+;; BACKEND MODE, step 2 (wiki/Graph-Store.md § Backend mode, the clean way):
+;; this browser keeps no log. A graph is a SEED — the server's rows at its
+;; head — and a suffix of the events since (loretile.store). The seed comes
+;; with its batch seq, so the sync entry stands exactly where it stands.
+(when enabled? (reset! store/remote? true))
+
+(defonce ^:private seeding (atom {}))   ; gid → the seed's fetch in flight
+
+(defn- fetch-seed!
+  "Graph `gid`'s seed — the server's rows — and its sync entry at exactly
+   that head. A promise; one fetch per graph at a time."
+  [gid]
+  (or (get @seeding gid)
+      (let [pr (-> (p/let [rows (fetch-text (str "/" (js/encodeURIComponent gid) "/rows"))
+                           ^js d (js/JSON.parse rows)]
+                     (when (store/seed! gid (gs/kg-from-dump rows) (.-head d) (.-lastId d))
+                       (swap! sync-state assoc gid {:seq (.-seq d) :confirmed (.-head d)})
+                       (save!))
+                     true)
+                   (p/finally #(swap! seeding dissoc gid)))]
+        (swap! seeding assoc gid pr)
+        pr)))
+
+(defn- held-count
+  "How many events of graph `gid`'s suffix `log` the server holds."
+  [gid log]
+  (min (count log) (max 0 (- (:confirmed (entry gid)) (store/seed-head gid)))))
+
+(defn- fetch-log!
+  "Graph `gid`'s whole log: the server's, then this browser's unconfirmed events."
+  [gid]
+  (p/let [{evs :events} (api-get (str "/" (js/encodeURIComponent gid) "?after=0"))]
+    (let [log (store/graph-events gid)
+          have (set (map :ev/id evs))]
+      (into (vec evs) (remove #(have (:ev/id %)) (subvec log (held-count gid log)))))))
+
+;; a graph folded from a FILTERED log, by the server (…/view): what a learner
+;; pinned at a publication sees, the changes since — keyed by the graph's
+;; newest event, so an edit or a republish asks again
+(defonce ^:private view-cache (r/atom {}))   ; [gid params last-id] → {:kg :cut :newest :changes}
+(defonce ^:private view-asked (atom #{}))
+
+(defn view!
+  "Promise of the server's fold of graph `gid`'s log filtered by `params`
+   ({:course :pin} or {:valid :recorded}): {:kg :cut :newest :changes}."
+  [gid params]
+  (p/let [text (fetch-text (str "/" (js/encodeURIComponent gid) "/view?"
+                                (str/join "&" (for [[k v] params :when v] (str (name k) "=" (js/encodeURIComponent v))))))
+          ^js d (js/JSON.parse text)]
+    {:kg (gs/kg-from-dump text) :cut (.-cut d) :newest (.-newest d) :changes (.-changes d)}))
+
+(defn view
+  "`view!`, cached: the answer, or nil while it is on its way (asked for once)."
+  [gid params]
+  (let [k [gid params (store/last-id-of gid)]]
+    (or (get @view-cache k)
+        (do (when-not (@view-asked k)
+              (swap! view-asked conj k)
+              (-> (view! gid params)
+                  (p/then #(swap! view-cache assoc k %))
+                  (p/catch (fn [e] (swap! view-asked disj k) (js/console.warn "loretile: a view failed:" (ex-message e))))))
+            nil))))
 
 (defn open-server-graph!
-  "Bring a server graph onto this device and open it: its whole log (as
-   JSON — parsed natively, ~2.5× faster than EDN), confirmed up to the
-   server's seq, and its graph built from the server's rows, fetched at the
-   same time, instead of replaying the log here. Promise of the id."
+  "Bring a server graph onto this device and open it: its seed (the
+   server's rows) — no log is fetched or kept here. Promise of the id."
   [{:keys [id] :as meta}]
-  (let [path (str "/" (js/encodeURIComponent id))]
-    (p/let [[text rows] (p/all [(fetch-text (str path "?after=0&format=json"))
-                                (p/catch (fetch-text (str path "/rows")) (constantly nil))])
-            ^js d (js/JSON.parse text)
-            events (persistent! (reduce (fn [v e] (conj! v (gs/decode-js e))) (transient []) (.-events d)))]
-      ;; the entry FIRST: opening the graph fires the open-graph watch, whose
-      ;; sync with no entry fetched the whole log again (as EDN, 2.5× slower)
-      (let [prev (get @sync-state id)]
-        (swap! sync-state assoc id {:seq (.-seq d) :confirmed (count events)})
-        (if (store/add-server-graph! meta events)
-          (do (save!)
-              (when rows (try (seed-from-rows! (store/graph-events id) rows)
-                              (catch :default e (js/console.warn "loretile: graph from the server's rows failed:" (ex-message e)))))
-              id)
-          (do (swap! sync-state (fn [st] (if prev (assoc st id prev) (dissoc st id)))) nil))))))
+  (p/let [_ (fetch-seed! id)]
+    (when (store/add-server-graph! meta []) id)))
 
-(defonce ^:private booted (atom nil))   ; how this boot built the graph: :rows | nil (folded here)
+(defonce ^:private booted (atom nil))   ; how this boot built the graph: :rows | nil
 
 (defn boot-kg!
-  "Boot: the open graph built from the server's rows — ANY size (wiki/Graph-Store.md
-   § Backend mode: the page's graph is the server's projection, not a refold)
-   — when everything here is confirmed and the rows hold exactly it. Else
-   (a never-synced graph, a log behind the server, no answer) the page folds
-   it as before and sync catches up. A promise."
+  "Boot: the open graph's seed from the server's rows. A promise."
   []
-  (let [gid @store/current
-        evs @store/events
-        {:keys [confirmed]} (entry gid)]
-    (if (and enabled? (pos? (count evs)) (= confirmed (count evs)))
-      (-> (p/let [rows (fetch-text (str "/" (js/encodeURIComponent gid) "/rows"))]
-            (when (seed-from-rows! evs rows) (reset! booted :rows)))
-          (p/catch (fn [_] nil)))
-      (p/resolved nil))))
+  (if enabled?
+    (-> (fetch-seed! @store/current) (p/then #(reset! booted :rows)) (p/catch (fn [_] nil)))
+    (p/resolved nil)))
 
-;; the checks read how the graph was built at boot
+;; the checks read how the graph was built at boot, the log as the server holds
+;; it (plus what is unconfirmed here), and whether the open graph is the server's
 (set! (.-loretileBootedFrom js/window) (fn [] (some-> @booted name)))
+(when enabled?
+  (set! (.-loretileLog js/window) (fn [id] (p/then (fetch-log! (or id @store/current)) pr-str)))
+  (set! (.-loretileAppGraphIsServers js/window)
+        (fn []
+          (p/let [rows (fetch-text (str "/" (js/encodeURIComponent @store/current) "/rows"))]
+            (let [norm (fn [kg] (into {} (remove (fn [[k v]] (or (nil? v) (#{::fold/eidx ::fold/nbr} k)))) kg))]
+              (= (norm (gs/kg-from-dump rows)) (norm (store/kg))))))))
 
 ;; --- one cycle: pull what others stored, push what is provisional ---------------
 
@@ -158,16 +197,16 @@
    log becomes confirmed ++ remote ++ provisional. Returns how many came."
   [gid remote new-seq]
   (let [log (store/graph-events gid)
-        {:keys [confirmed]} (entry gid)
+        h (held-count gid log)
         have (set (map :ev/id log))
         remote (vec (remove #(have (:ev/id %)) remote))
-        held (subvec log 0 (min confirmed (count log)))]
+        held (subvec log 0 h)]
     (when (seq remote)
-      (store/replace-log! gid (-> held (into remote) (into (subvec log (count held)))))
+      (store/replace-log! gid (-> held (into remote) (into (subvec log h))))
       ;; an ontology graph changed elsewhere: the graphs bound to it here take the new copy
-      (when (:ontology-graph? (fold/kg (store/graph-events gid))) (store/sync-bound! gid))
-      (when (= gid @store/current) (show-activity! (fold/kg held) remote)))
-    (swap! sync-state assoc gid {:seq new-seq :confirmed (+ (count held) (count remote))})
+      (when (:ontology-graph? (store/kg-of gid)) (store/sync-bound! gid))
+      (when (= gid @store/current) (show-activity! (store/kg-before gid h) remote)))
+    (swap! sync-state assoc gid {:seq new-seq :confirmed (+ (store/seed-head gid) h (count remote))})
     (save!)
     (count remote)))
 
@@ -175,8 +214,7 @@
   "Provisional events leave the log: `ids`, or every provisional one."
   [gid ids]
   (let [log (store/graph-events gid)
-        {:keys [confirmed]} (entry gid)
-        drop? (if ids (set ids) (set (map :ev/id (subvec log (min confirmed (count log))))))]
+        drop? (if ids (set ids) (set (map :ev/id (subvec log (held-count gid log)))))]
     (when (some #(drop? (:ev/id %)) log)
       (store/replace-log! gid (vec (remove #(drop? (:ev/id %)) log))))))
 
@@ -189,8 +227,8 @@
         ;; `(seq others)` below threw after EVERY stored push — the edits were
         ;; taken back as «unreachable» until the next pull restored them
         ;; (2026-11-24 → 2026-11-26)
-        {known :seq confirmed :confirmed} (entry gid)
-        tail (subvec log (min confirmed (count log)))]
+        {known :seq} (entry gid)
+        tail (subvec log (held-count gid log))]
     (if (empty? tail)
       0
       (p/let [{pushed-seq :seq events :events} (api-post (str "/" (js/encodeURIComponent gid) "/events") {:events tail :after known})]
@@ -198,13 +236,13 @@
               sent (set (map :ev/id tail))
               have (set (map :ev/id log))
               others (vec (remove #(or (have (:ev/id %)) (sent (:ev/id %))) events))
-              held (subvec log 0 (min confirmed (count log)))
+              held (subvec log 0 (held-count gid log))
               mine (filterv #(sent (:ev/id %)) log)
               later (filterv #(not (sent (:ev/id %))) (subvec log (count held)))]
           (when (seq others)
             (store/replace-log! gid (-> held (into others) (into mine) (into later)))
-            (when (= gid @store/current) (show-activity! (fold/kg held) others)))
-          (swap! sync-state assoc gid {:seq pushed-seq :confirmed (+ (count held) (count others) (count mine))})
+            (when (= gid @store/current) (show-activity! (store/kg-before gid (count held)) others)))
+          (swap! sync-state assoc gid {:seq pushed-seq :confirmed (+ (store/seed-head gid) (count held) (count others) (count mine))})
           (save!)
           (count mine))))))
 
@@ -216,6 +254,8 @@
   [gid & [{:keys [push-only?]}]]
   (cond
     (not enabled?) (p/resolved nil)
+    ;; no seed yet: events pulled now would land before it — the seed comes first
+    (nil? (get @store/seeds gid)) (do (fetch-seed! gid) (p/resolved nil))
     (@busy gid) (do (swap! again conj gid) (p/resolved nil))
     :else
     (do
@@ -239,7 +279,8 @@
                              (swap! status assoc gid :ok))
                          ;; out of reach: nothing provisional may stay (no offline) —
                          ;; but a graph never synced keeps its log for the next cycle
-                         (let [n (- (count (store/graph-events gid)) (:confirmed (entry gid)))]
+                         (let [log (store/graph-events gid)
+                               n (- (count log) (held-count gid log))]
                            (js/console.warn "loretile sync" gid (ex-message e))
                            (when (contains? @sync-state gid)
                              (take-back! gid nil)
@@ -252,22 +293,25 @@
 
 ;; --- the loop (vintry's rhythm) ---------------------------------------------------
 
-(defn- cut-back!
-  "Boot: a log longer than its confirmed prefix held edits the server never
-   confirmed — they go (server-first: unconfirmed is unsaved)."
-  []
-  ;; only entries this sync wrote: local-first's pending edits are pushed instead
-  (doseq [[gid {:keys [confirmed]}] @sync-state
-          :let [log (store/graph-events gid)]
-          :when (and confirmed (> (count log) confirmed))]
-    (store/replace-log! gid (subvec log 0 confirmed))))
-
 (defn start!
   "Wire the hook and the timers; nothing when the server keeps no graphs."
   []
   (when enabled?
     (js/localStorage.removeItem "loretile-conflicts")   ; local-first's conflict cards: gone with it
-    (cut-back!)
+    ;; the store asks here for what the server holds: a graph's seed, its whole log
+    (reset! store/fetch-seed fetch-seed!)
+    (reset! store/fetch-log fetch-log!)
+    ;; the past view: the server folds the log as it stood (…/view)
+    (add-watch store/as-of ::view
+               (fn [_ _ _ at]
+                 (if (nil? at)
+                   (reset! store/views {})
+                   (let [gid @store/current]
+                     (when-not (get @store/views [gid at])
+                       (-> (fetch-text (str "/" (js/encodeURIComponent gid) "/view?"
+                                            (str/join "&" (for [[k v] at :when v] (str (name k) "=" v)))))
+                           (p/then #(swap! store/views assoc [gid at] (gs/kg-from-dump %)))
+                           (p/catch (fn [e] (js/console.warn "loretile: the past view failed:" (ex-message e))))))))))
     ;; every edit, in any graph, goes to the server now
     (reset! store/on-append (fn [gid _] (sync! gid {:push-only? true})))
     (js/setInterval #(sync! @store/current) 15000)

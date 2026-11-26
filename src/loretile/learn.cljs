@@ -23,6 +23,7 @@
             [loretile.icons :as icons]
             [loretile.llm :as llm]
             [loretile.store :as store]
+            [loretile.sync :as sync]
             [loretile.tools :as tools]
             [loretile.tour :as tour]))
 
@@ -441,12 +442,17 @@
   "«Start over»: shelve the run, then start again against the NEWEST
    publication. Reusing the rendered course carried the old pin forward."
   [course-id]
-  (let [found (store/find-course course-id)
-        evs (store/graph-events (:id found))
-        cut (fold/publication-cut evs course-id)
-        kg (fold/kg (fold/events-at evs cut))]
-    (when-let [course (get-in kg [:courses course-id])]
-      (start! kg (assoc course :graph-id (:id found) :pin cut)))))
+  (let [found (store/find-course course-id)]
+    (if @store/remote?
+      ;; backend mode: the server folds the newest publication (no log here)
+      (p/let [{:keys [kg cut]} (sync/view! (:id found) {:course course-id})]
+        (when-let [course (get-in kg [:courses course-id])]
+          (start! kg (assoc course :graph-id (:id found) :pin cut))))
+      (let [evs (store/graph-events (:id found))
+            cut (fold/publication-cut evs course-id)
+            kg (fold/kg (fold/events-at evs cut))]
+        (when-let [course (get-in kg [:courses course-id])]
+          (start! kg (assoc course :graph-id (:id found) :pin cut)))))))
 
 (defn- start-learning! [kg course]
   (upd! assoc :stage :learn)
@@ -493,14 +499,19 @@
    (review 2026-10-02 #11)."
   [kg course]
   (let [gid (:graph-id course)
-        evs (store/graph-events gid)
-        cut (fold/publication-cut evs (:id course))
-        kg2 (if (seq evs) (fold/kg (fold/events-at evs cut)) kg)
-        course2 (or (some-> (get-in kg2 [:courses (:id course)]) (assoc :graph-id gid :pin cut)) course)]
-    (upd! update :round inc)
-    (upd! assoc :pin (:pin course2))
-    (say! {:kind :narration :text (t :learn/plan-lead-again)})
-    (enter-plan! kg2 course2)))
+        go! (fn [kg2 cut]
+              (let [course2 (or (some-> (get-in kg2 [:courses (:id course)]) (assoc :graph-id gid :pin cut)) course)]
+                (upd! update :round inc)
+                (upd! assoc :pin (:pin course2))
+                (say! {:kind :narration :text (t :learn/plan-lead-again)})
+                (enter-plan! kg2 course2)))]
+    (if @store/remote?
+      ;; backend mode: the server folds the newest publication (no log here)
+      (-> (p/let [{kg2 :kg cut :cut} (sync/view! gid {:course (:id course)})] (go! kg2 cut))
+          (p/catch (fn [_] (go! kg (:pin course)))))
+      (let [evs (store/graph-events gid)
+            cut (fold/publication-cut evs (:id course))]
+        (go! (if (seq evs) (fold/kg (fold/events-at evs cut)) kg) cut)))))
 
 (defn- answer! [kg course entry correct? choice]
   (let [{:keys [ctx concept item]} entry
@@ -1117,11 +1128,18 @@
         ;; empty log, which dead-ended the learner with no way out.
         pinned? (= course-id (:course @run))
         gid (or (when pinned? (:graph @run)) (:id found))
-        evs (store/graph-events gid)
-        cut (if pinned? (:pin @run) (fold/publication-cut evs course-id))
+        ;; backend mode: the server folds what this learner sees (no log here) —
+        ;; nil while it is on its way
+        served (when (and @store/remote? gid) (sync/view gid (cond-> {:course course-id} pinned? (assoc :pin (:pin @run)))))
+        evs (if @store/remote? [] (store/graph-events gid))
+        cut (cond @store/remote? (:cut served)
+                  pinned? (:pin @run)
+                  :else (fold/publication-cut evs course-id))
         ;; a pin that is missing from the log → the newest publication, never HEAD
-        cut (if (some #(= cut (:ev/id %)) evs) cut (fold/publication-cut evs course-id))
-        kg (if (seq evs) (fold/kg (fold/events-at evs cut)) (:kg found))
+        cut (if (or @store/remote? (some #(= cut (:ev/id %)) evs)) cut (fold/publication-cut evs course-id))
+        kg (cond @store/remote? (:kg served)
+                 (seq evs) (fold/kg (fold/events-at evs cut))
+                 :else (:kg found))
         course (some-> (get-in kg [:courses course-id])
                        (assoc :graph-id gid :pin cut))
         ;; a run keeps teaching what the author has since deprecated: say
@@ -1134,11 +1152,14 @@
                   (filter #(= :deprecated (get-in head [:concepts % :status]))
                           (:order (course-scope kg course))))
         ;; «a new version runs on» only when the newest one no longer has them
-        newer? (and (seq retired) (not= cut (fold/publication-cut evs course-id))
+        newer? (and (seq retired) (not= cut (if @store/remote? (:newest served) (fold/publication-cut evs course-id)))
                     (let [now (some-> (get-in head [:courses course-id]) (#(course-scope head %)) :closure)]
                       (not-any? (set now) retired)))]
     (when course (warm-exercises! kg course))
     (cond
+      (and @store/remote? gid (nil? served))
+      [:div.learn [:p.muted.learn-loading (t :ui/server-graphs-loading)]]
+
       (nil? course)
       [:div.learn
        [:p (t :ui/topic-not-found)]

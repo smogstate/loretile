@@ -51,7 +51,14 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
       await page.goto(BASE, { waitUntil: 'networkidle0' });
       return page;
     };
-    const log = (p) => p.evaluate(() => loretileLog() || '');
+    // a graph's log in backend mode (wiki/Graph-Store.md § Backend mode): what the
+    // server holds, read from here, plus what is still unconfirmed in that page —
+    // the page keeps no log of its own
+    const log = async (p, g) => {
+      const gid = g || await p.evaluate(() => cljs.core.deref(loretile.store.current));
+      const srv = await fetch(BASE + 'api/graphs/' + gid).then((r) => r.text(), () => '');
+      return srv + '\n' + await p.evaluate((x) => cljs.core.pr_str(loretile.store.graph_events(x)), gid);
+    };
     // the guard's refusal, printed — or null when the event was stored
     const append = (p, edn) => p.evaluate((s) => { const r = loretile.store.append_BANG_(cljs.reader.read_string(s)); return r ? cljs.core.pr_str(r) : null; }, edn);
     // one whole sync cycle of the open graph, waited for (retried while one is already running)
@@ -85,13 +92,22 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     check(offered.some((t) => /Общий граф/.test(t)), 'B sees it under «На сервере»');
     await B.click('.server-graphs .open-server'); await sleep(1500);
     check(await B.evaluate(() => document.querySelectorAll('.node').length) === 1 && /Икс/.test(await log(B)), 'B opens it and has A\'s node');
-    check(await B.evaluate(() => window.loretileGraphStore.appGraphIsFold()), 'B\'s graph, built from the server\'s rows, is exactly the fold of the log it received');
+    check(await B.evaluate(() => window.loretileAppGraphIsServers()), 'B\'s graph is exactly the server\'s (its rows), and B keeps no log');
 
     // backend mode, the clean way (wiki/Graph-Store.md): a boot builds the graph
     // from the server's rows at ANY size, never a refold here
     await B.reload({ waitUntil: 'networkidle0' }); await sleep(800);
-    check(await B.evaluate(() => window.loretileBootedFrom()) === 'rows' && await B.evaluate(() => window.loretileGraphStore.appGraphIsFold()),
-      'B\'s reload builds its small graph from the server\'s rows, and it is the fold of the log');
+    check(await B.evaluate(() => window.loretileBootedFrom()) === 'rows' && await B.evaluate(() => window.loretileAppGraphIsServers()),
+      'B\'s reload builds its graph from the server\'s rows: the server\'s graph exactly');
+    const kept = await B.evaluate(() => new Promise((ok) => {
+      const r = indexedDB.open('loretile');
+      r.onsuccess = () => { const d = r.result;
+        if (!d.objectStoreNames.contains('events')) { d.close(); return ok(0); }
+        const q = d.transaction('events', 'readonly').objectStore('events').count();
+        q.onsuccess = () => { d.close(); ok(q.result); }; q.onerror = () => { d.close(); ok(-1); }; };
+      r.onerror = () => ok(0);
+    }).then((n) => ({ idb: n, suffix: cljs.core.count(loretile.store.graph_events(cljs.core.deref(loretile.store.current))) })));
+    check(kept.idb === 0 && kept.suffix === 0, `B keeps no log: no event in IndexedDB, nothing in memory past the server's rows (${JSON.stringify(kept)})`);
 
     // an edit in B reaches A — in ONE request: the POST, no pull before it
     await B.evaluate(() => { window.__api = []; const f = window.fetch;
@@ -219,10 +235,44 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await syncNow(A);
     await B.evaluate((oid) => loretile.store.switch_graph_BANG_(oid), made);
     await syncNow(B);
-    const bData = await B.evaluate((gid) => loretileLog(gid), dgid);
+    const bData = await log(B, dgid);
     const copied = /:ontology-copy \{[^]*:label "роль"/.test(bData);
     check(copied, 'A adds a type to the ontology; when B syncs the ontology graph, B\'s bound data graph takes the new copy'
       + (copied ? '' : ` (B's last error ${await B.evaluate(() => cljs.core.pr_str(cljs.core.deref(loretile.store.last_error)))}; on the server: ${/роль/.test(await onServer(dgid))}; B's data graph ends …${bData.slice(-400)})`));
+
+    // --- B keeps no log: what needed one is answered from the seed or by the server
+    await B.evaluate((g) => loretile.store.switch_graph_BANG_(g), gid);
+    await sleep(800);
+    const has = (p, id) => p.evaluate((x) => cljs.core.contains_QMARK_(cljs.core.get(loretile.store.kg(), cljs.core.keyword('concepts')), x), id);
+    // undo: this session's edit is reversed from the seed and the suffix
+    await append(B, `{:ev/type :change :ops [[:node-set "u-1" {:title "Отменить"}]]}`);
+    await sleep(800);
+    const undone = await B.evaluate(() => loretile.store.undo_BANG_());
+    await sleep(1000);
+    check(undone && !(await has(B, 'u-1')) && /:node-remove "u-1"/.test(await onServer(gid)), 'undo works with no log here: the node goes, and the server holds the reversal');
+    // the past view: the server folds the log as it stood
+    const t0 = Date.now(); await sleep(50);
+    await append(B, `{:ev/type :change :ops [[:node-set "p-1" {:title "Позже"}]]}`);
+    await sleep(800);
+    await B.evaluate((t) => cljs.core.reset_BANG_(loretile.store.as_of, cljs.reader.read_string(`{:valid ${t}}`)), t0);
+    for (let i = 0; i < 40 && await B.evaluate(() => loretile.store.view_pending_QMARK_()); i++) await sleep(100);
+    const past = !(await has(B, 'p-1'));
+    await B.evaluate(() => cljs.core.reset_BANG_(loretile.store.as_of, null));
+    check(past && await has(B, 'p-1'), 'the past view is the server\'s fold of the log as it stood: before the edit the node is not there; back at HEAD it is');
+    // export: the server's log, downloaded
+    await B.evaluate(() => { window.__blob = null; HTMLAnchorElement.prototype.click = function () {};
+      URL.createObjectURL = (b) => { window.__blob = b; return 'blob:none'; }; loretile.store.export_edn_BANG_(); });
+    for (let i = 0; i < 40 && !(await B.evaluate(() => !!window.__blob)); i++) await sleep(100);
+    const exported = await B.evaluate(() => window.__blob ? window.__blob.text() : '');
+    check(/Икс/.test(exported) && /Позже/.test(exported), 'export downloads the log the server holds (A\'s first node is in it, and B\'s latest)');
+    // a learner opens a published course: the server folds what a learner sees
+    await append(B, `{:ev/type :change :ops [[:node-set "c-topic" {:title "Тема курса"}]]}`);
+    await B.evaluate(() => loretile.store.append_BANG_(loretile.ops.publish_course(cljs.reader.read_string('{:id "c-sync" :title "Курс синхронизации" :targets [["c-topic" :novice]] :locale "ru"}'))));
+    await sleep(1000);
+    await B.goto(BASE + '#/learn/c-sync', { waitUntil: 'networkidle0' });
+    await B.waitForSelector('.learn h2', { timeout: 8000 }).catch(() => {});
+    const intro = await B.$eval('.learn', (e) => e.textContent).catch(() => '');
+    check(/Курс синхронизации/.test(intro) && /Тема курса/.test(intro), 'a learner opens the course: the server folds its publication, the intro names its target');
   } finally {
     await browser.close();
     server.kill();

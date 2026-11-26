@@ -41,7 +41,7 @@
 ;; are announced once it ends, so its events reach the server as ONE batch
 (defonce ^:private held (atom nil))
 (defn- appended! [gid e] (if @held (swap! held conj gid) (some-> @on-append (apply [gid e]))))
-(declare import-edn! read-log sync-bound! load-registry!)
+(declare import-edn! read-log sync-bound! load-registry! kg-of)
 
 ;; the fold is pure, so it is cached on the identity of the event vector:
 ;; renders call (kg) many times a frame, and every call re-folded the whole
@@ -52,6 +52,19 @@
 ;; `append!` refuses — the past is for looking at. Never persisted: a reload
 ;; is back at HEAD.
 (defonce as-of (r/atom nil))
+
+;; BACKEND MODE, step 2 (wiki/Graph-Store.md § Backend mode, the clean way):
+;; the server holds every log; this browser keeps NONE. A graph here is a
+;; SEED — the graph as the server's rows give it at its head — plus a SUFFIX
+;; in `events` / `shelf`: the events since (this session's edits, others'
+;; pulled). Nothing is read from or written to IndexedDB (server-first:
+;; unconfirmed is unsaved). `remote?` is set by loretile.sync before `load!`.
+(defonce remote? (atom false))
+(defonce seeds (r/atom {}))       ; gid → {:kg :head :last-id} — the server's graph at its head
+(defonce views (r/atom {}))       ; [gid as-of] → the graph as it stood, folded by the server
+;; hooks loretile.sync fills (it requires this namespace, not the other way):
+(defonce fetch-seed (atom nil))   ; gid → fetch its seed (the server's rows)
+(defonce fetch-log (atom nil))    ; gid → promise of its whole log, from the server
 
 (defonce ^:private kg-cache (atom [nil nil nil]))
 (defn- grew?
@@ -67,8 +80,10 @@
 ;; a second copy of the graph: {:graph id :items [[event delta heads-before] …]}
 (defonce ^:private befores (atom nil))   ; {:graph id :by [[event kg-before] …]} — the last 50 appends
 
+(declare remote-kg)
+
 (defn kg []
-  (let [evs @events at @as-of [k a v] @kg-cache]
+  (if @remote? (remote-kg) (let [evs @events at @as-of [k a v] @kg-cache]
     (cond
       (and (identical? k evs) (= a at)) v
       ;; an append (wiki/Graph-Store.md): fold only the new events onto the
@@ -87,7 +102,48 @@
         (reset! kg-cache [evs at v])
         v)
       :else
-      (let [v (fold/kg (fold/events-as-of evs at))] (reset! kg-cache [evs at v]) v))))
+      (let [v (fold/kg (fold/events-as-of evs at))] (reset! kg-cache [evs at v]) v)))))
+
+(defn- fold-onto
+  "Events onto a folded graph, one delta each → [graph [[event graph-before] …]]."
+  [g evs]
+  (reduce (fn [[g items] e] [(fold/apply-delta g (fold/delta (fold/map-reader g) e)) (conj items [e g])])
+          [g []] evs))
+
+(defn- remember-befores! [gid items keep?]
+  (swap! befores (fn [m] {:graph gid
+                          :by (vec (take-last 50 (into (if (and keep? (= (:graph m) gid)) (:by m) []) items)))})))
+
+(defonce ^:private remote-cache (atom nil))   ; [gid seed suffix graph]
+
+(defn- remote-kg
+  "Backend mode: the open graph = its seed with the suffix folded on (cheap:
+   the suffix is this session's events). An empty graph while the seed is on
+   its way (`loading?`); the past view is the server's fold of it (`views`),
+   HEAD until that arrives."
+  []
+  (let [gid @current evs @events at @as-of seed (get @seeds gid)
+        head (let [[cg cs ce cv] @remote-cache]
+               (cond
+                 (nil? seed) fold/empty-kg
+                 (and (= cg gid) (identical? cs seed) (identical? ce evs)) cv
+                 (and (= cg gid) (identical? cs seed) (grew? ce evs))
+                 (let [[v items] (fold-onto cv (subvec evs (count ce)))]
+                   (remember-befores! gid items true) (reset! remote-cache [gid seed evs v]) v)
+                 :else
+                 (let [[v items] (fold-onto (:kg seed) evs)]
+                   (remember-befores! gid items false) (reset! remote-cache [gid seed evs v]) v)))]
+    (if at (or (get @views [gid at]) head) head)))
+
+(defn loading?
+  "Backend mode: is the open graph's seed still on its way?"
+  []
+  (and @remote? (nil? (get @seeds @current))))
+
+(defn view-pending?
+  "Backend mode: is the past view asked of the server and not yet here?"
+  []
+  (boolean (and @remote? @as-of (nil? (get @views [@current @as-of])))))
 
 (defn seed-kg!
   "The open graph's log `evs` folds to `g` — built from the projection's rows
@@ -262,12 +318,13 @@
 
 (defn- drop-log! [gid]
   (swap! saved dissoc gid)
+  (swap! seeds dissoc gid)
   (try (let [tx (.transaction @db #js ["logs" "events"] "readwrite")]
          (.delete (.objectStore tx "logs") gid)
          (.delete (.objectStore tx "events") (graph-range gid)))
        (catch :default _ nil)))
 
-(defn- persist! [] (save-log! @current @events))
+(defn- persist! [] (or @remote? (save-log! @current @events)))
 
 (defn- persist-registry! []
   (and (write! graphs-key (pr-str @graphs))
@@ -275,12 +332,37 @@
 
 (defn- shelve! [id evs]
   (swap! shelf assoc id evs)
-  (save-log! id evs))
+  (or @remote? (save-log! id evs)))
 
 (defn graph-events
-  "The log of any graph, open or shelved."
+  "The log of any graph, open or shelved — in backend mode only its SUFFIX
+   (the events since its seed): the server holds the rest."
   [id]
   (if (= id @current) @events (get @shelf id [])))
+
+(defn seed!
+  "Backend mode: graph `gid` as the server's rows give it at event `head`.
+   Taken only while its suffix is empty — a seed is the graph BEFORE the
+   suffix, and a later one would fold the suffix twice."
+  [gid g head last-id]
+  (when (empty? (graph-events gid))
+    (swap! seeds assoc gid {:kg g :head head :last-id last-id})
+    true))
+
+(defn- seed-new!
+  "Backend mode: a graph made here, not yet on the server — empty, at head 0."
+  [gid]
+  (when @remote? (swap! seeds assoc gid {:kg fold/empty-kg :head 0 :last-id nil})))
+
+(defn seed-head
+  "Backend mode: the server event its seed stands at (0: a graph made here)."
+  [gid]
+  (or (:head (get @seeds gid)) 0))
+
+(defn last-id-of
+  "The id of graph `gid`'s newest event — its seed's when the suffix is empty."
+  [gid]
+  (or (:ev/id (peek (graph-events gid))) (:last-id (get @seeds gid))))
 
 ;; the checks read logs here (they used to read localStorage)
 (gobj/set js/window "loretileLog" (fn [id] (pr-str (graph-events (or id @current)))))
@@ -310,6 +392,10 @@
    after it. When IndexedDB cannot open, the localStorage logs are read and
    KEPT, and every edit is refused with the storage banner — never lost."
   []
+  (if @remote?
+    ;; backend mode: no log on this device — the registry, then the open
+    ;; graph's seed from the server (sync/boot-kg!)
+    (do (load-registry! #{}) (js/Promise.resolve nil))
   (let [cur (read-ls current-key "demo")
         ;; `ls-keys`, never `keys`: a local named keys shadowed clojure.core/keys below
         {ls-keys :keys logs :logs} (ls-logs cur)]
@@ -341,7 +427,7 @@
                    ;; keeping the old one would save it over that graph's log
                    (when (not= cur @current)
                      (reset! events (vec (get @shelf @current [])))
-                     (swap! shelf dissoc @current))))))))
+                     (swap! shelf dissoc @current)))))))))
 
 (defn- load-registry! [gone]
   ;; migration: a pre-multi-graph install has a working copy and no
@@ -380,6 +466,7 @@
              (swap! shelf assoc @current @events)
              (reset! current other)
              (reset! events (get @shelf other []))
+             (when (and @remote? (nil? (get @seeds other))) (some-> @fetch-seed (apply [other])))
              (reset! last-error {:error :graph-switched-elsewhere :detail other})))
          :else nil))))
   ;; a log another tab saved: read it again
@@ -413,8 +500,10 @@
   "Shelve what is open, then open another. ABORTS if the shelf write fails:
    losing the open graph is never an acceptable cost of navigating."
   [id]
-  (and (not= id @current) (shelve! @current @events)
-       (open! id (get @shelf id []) @graphs)))
+  (let [ok (and (not= id @current) (shelve! @current @events)
+                (open! id (get @shelf id []) @graphs))]
+    (when (and ok @remote? (nil? (get @seeds id))) (some-> @fetch-seed (apply [id])))
+    ok))
 
 (declare append!)
 
@@ -425,6 +514,7 @@
    (ruling 2026-10-02) and it stays private (decision #1)."
   [title & [{:keys [personal?]}]]
   (let [id (str "g-" (.toString (js/Date.now) 36))]
+    (seed-new! id)
     (when (and (shelve! @current @events)
                (open! id [] (conj @graphs (cond-> {:id id :title title} personal? (assoc :personal? true)))))
       ;; the title is a graph property too, so it travels with the log (a
@@ -495,11 +585,18 @@
   ;; every call, and the open one in the past view — cache by log if either
   ;; ever shows up. Atoms read HERE, never inside the lazy `for` (a render
   ;; that realised it later would not subscribe to them).
+  (if @remote?
+    ;; backend mode: a graph whose seed has not come yet is left out and asked for
+    (let [cur @current head (kg) sd @seeds shelved @shelf]
+      (keep (fn [g] (cond (= (:id g) cur) (assoc g :kg head)
+                          (get sd (:id g)) (assoc g :kg (first (fold-onto (:kg (get sd (:id g))) (get shelved (:id g) [])))) 
+                          :else (do (some-> @fetch-seed (apply [(:id g)])) nil)))
+            @graphs))
   (let [cur @current open-evs @events head (when (nil? @as-of) (kg)) shelved @shelf]
     (for [g @graphs]
       (assoc g :kg (cond (and head (= (:id g) cur)) head
                          (= (:id g) cur) (fold/kg open-evs)
-                         :else (fold/kg (get shelved (:id g) [])))))))
+                         :else (fold/kg (get shelved (:id g) []))))))))
 
 (defn find-course
   "Which graph holds this course? Returns {:id :title :kg :course} or nil.
@@ -575,7 +672,7 @@
             ;; an event that brought its own clock (a merge file) is RECORDED
             ;; now — the second clock of the bitemporal cut (fold/events-as-of)
             (and (:ev/ts e) (not (:ev/recorded e))) (assoc :ev/recorded (js/Date.now)))]
-    (if-let [err (fold/guard (kg) e)]
+    (if-let [err (if (loading?) {:error :not-loaded :detail @current} (fold/guard (kg) e))]
       (do (reset! last-error err) err)
       (do (swap! events conj e)
           ;; a refused write is NOT a save: the event leaves memory again and
@@ -627,7 +724,8 @@
   (let [evs (graph-events gid)]
     ;; the open graph is already folded (`kg`, outside the past view): a
     ;; refold per write held a rename of a 40k graph seconds
-    (or (fold/guard (if (and (= gid @current) (nil? @as-of)) (kg) (fold/kg evs)) e)
+    (or (when (and @remote? (nil? (get @seeds gid))) (some-> @fetch-seed (apply [gid])) {:error :not-loaded :detail gid})
+        (fold/guard (if (and (= gid @current) (nil? @as-of)) (kg) (kg-of gid)) e)
         (let [evs (conj evs e)
               err (if (= gid @current)
                     (do (reset! events evs) (when-not (persist!) (swap! events pop) false))
@@ -673,15 +771,14 @@
   "The event that gives a data graph the ontology graph `oid` as it stands:
    a graph property holding the vocabulary read out of it (wiki/Property-Graph.md)."
   [oid]
-  (let [evs (graph-events oid)
-        okg (fold/kg evs)
-        p (assoc (fold/vocabulary okg) :id oid)
+  (when-let [okg (kg-of oid)]
+  (let [p (assoc (fold/vocabulary okg) :id oid)
         ;; its competency questions travel too, to be checked over each graph's data
         cqs (vec (for [[id q] (sort-by key (:cqs okg))] (assoc (dissoc q :inherited?) :id id)))]
     (when (and (seq (:node-types p)) (not (profile/problems p)))
       (stamp nil {:ev/type :change
-                  :ops [[:graph-set {:ontology oid :ontology-version (:ev/id (peek evs)) :ontology-copy p
-                                     :ontology-cqs cqs}]]}))))
+                  :ops [[:graph-set {:ontology oid :ontology-version (last-id-of oid) :ontology-copy p
+                                     :ontology-cqs cqs}]]})))))
 
 (defn ontology-latest
   "The ontology graph `oid` as a copy would carry it now: the vocabulary, or
@@ -803,9 +900,9 @@
   [oid]
   (when-let [e (copy-event oid)]
     ;; the ontology graph folded once, not once per bound graph
-    (let [renames (delay (get-in (fold/kg (graph-events oid)) [:graph :relation-renames]))]
+    (let [renames (delay (get-in (kg-of oid) [:graph :relation-renames]))]
       (doseq [{:keys [id]} (filter #(= oid (:ontology %)) @graphs)
-              :let [k (fold/kg (graph-events id))
+              :let [k (or (kg-of id) {})
                     v (get-in k [:ontology :version])]
               :when (not= v (get-in e [:ops 0 1 :ontology-version]))]
         ;; a RENAMED relation (2026-11-20): the graph's own links move to the new
@@ -846,6 +943,7 @@
   (let [id (str "o-" (.toString (js/Date.now) 36))
         e (stamp id {:ev/type :change
                      :ops (into [[:graph-set {:ontology fold/types-ontology :title title}]] (vocabulary-ops p))})]
+    (seed-new! id)
     (when (and (shelve! @current @events)
                (open! id [e] (conj @graphs {:id id :title title :ontology fold/types-ontology})))
       id)))
@@ -871,7 +969,22 @@
     (set! (.-download a) fname)
     (.click a)))
 
-(defn- kg-of [id] (if (= id @current) (kg) (fold/kg (graph-events id))))
+(defn kg-of
+  "Graph `id` folded (the open one is `kg`). Backend mode: its seed and
+   suffix — nil while its seed has not come (it is asked for)."
+  [id]
+  (cond (= id @current) (kg)
+        (not @remote?) (fold/kg (graph-events id))
+        (get @seeds id) (first (fold-onto (:kg (get @seeds id)) (graph-events id)))
+        :else (do (some-> @fetch-seed (apply [id])) nil)))
+
+(defn kg-before
+  "Graph `gid` just before the `i`-th event of its log (backend mode: of its suffix)."
+  [gid i]
+  (let [evs (graph-events gid)]
+    (if @remote?
+      (first (fold-onto (or (:kg (get @seeds gid)) fold/empty-kg) (subvec evs 0 i)))
+      (fold/kg (subvec evs 0 i)))))
 
 (defn- reverse-of!
   "Append the change that reverses the event `id` of the open graph; the id
@@ -882,7 +995,7 @@
     (when i
       (when-let [ops (fold/undo-ops (or (when (= (:graph @befores) @current)
                                           (some (fn [[e g]] (when (identical? e (nth evs i)) g)) (:by @befores)))
-                                        (fold/kg (subvec evs 0 i)))
+                                        (kg-before @current i))
                                     (nth evs i))]
         (reset! replaying? true)
         (let [err (try (append! {:ev/type :change :ops ops}) (finally (reset! replaying? false)))]
@@ -913,7 +1026,11 @@
   "Download a graph's log as log.edn (the open one by default) — the author
    drops it into kg/{ns}/ in git."
   ([] (export-edn! @current))
-  ([id] (download! (with-out-str (doseq [e (graph-events id)] (prn e))) "application/edn" "log.edn")))
+  ([id] (let [save! #(download! (with-out-str (doseq [e %] (prn e))) "application/edn" "log.edn")]
+          (if @remote?
+            ;; backend mode: the server holds the log — fetched for the download
+            (-> (@fetch-log id) (.then save!) (.catch #(reset! last-error {:error :server-unreachable :detail 0})))
+            (save! (graph-events id))))))
 
 (defn export-md!
   "Download a graph as ONE markdown file for a coding agent
@@ -991,7 +1108,7 @@
                     (let [{evs :events err :error} (read-log text)]
                       (if err
                         (reset! last-error err)
-                        (and (shelve! @current @events)
+                        (and (do (seed-new! id) true) (shelve! @current @events)
                              (open! id evs (conj @graphs {:id id :title (or title (name slug))})))))))))
        (.catch (fn [e] (reset! last-error {:error :demo-unavailable :detail (str e)}))))))
 

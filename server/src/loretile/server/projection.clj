@@ -292,6 +292,27 @@
            ",\"discarded\":" (value db "SELECT json_group_array(key) FROM discarded WHERE graph=?" graph)
            ",\"heads\":" (json/write-str (value db "SELECT props FROM heads WHERE graph=?" graph)) "}"))))
 
+(defn kg->dump-json
+  "A folded kg in `dump-json`'s shape (nodes [id class data], edges [status
+   data], data inline; discarded; heads as EDN) — what the server answers for
+   a graph folded from a FILTERED log (`graphs/view`: the past view, a pinned
+   learner). The browser reads it back with `graph-store/kg-from-dump`;
+   `extra` = more top-level fields (head, cut, changes …). Here, not in
+   graph_store.cljc: that file is part of the fold's hash, and a server-only
+   codec must not rebuild every projection."
+  [kg extra]
+  (json/write-str
+   (merge extra
+          {"nodes" (concat (for [at [:concepts :objects :items :sources :questions :courses :cqs]
+                                 [id n] (get kg at)]
+                             [id (name at) (gs/encode n)])
+                           (for [[k p] (:proposals kg) :when (string? k)] [k "proposals" (gs/encode p)]))
+           "edges" (concat (for [e (:edges kg)] ["accepted" (gs/encode e)])
+                           (for [[k p] (:proposals kg) :when (vector? k)] ["proposed" (gs/encode p)])
+                           (for [l (:object-links kg)] ["link" (gs/encode l)]))
+           "discarded" (map pr-str (:discarded kg))
+           "heads" (pr-str (into {} (remove (comp nil? val)) (select-keys kg gs/head-keys)))})))
+
 (defn node
   "{:node [class data] :children [[class id data]] :out [data] :in [data]} —
    data as the stored JSON strings, like the Worker's — or nil."

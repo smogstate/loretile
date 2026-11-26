@@ -25,6 +25,7 @@
             [loretile.server.config :as config]
             [loretile.server.embedder :as embedder]
             [loretile.server.log :refer [log]]
+            [loretile.fold :as fold]
             [loretile.graph-store :as gs]
             [loretile.server.projection :as proj]
             [loretile.server.s3 :as s3])
@@ -153,7 +154,49 @@
 
 (defn structure "[head json]" [gid] (read-graph gid (fn [db g] [(event-count g) (proj/structure db gid)])))
 (defn node [gid id] (read-graph gid (fn [db _] (proj/node db gid id))))
-(defn rows-json "Every current row as one JSON string (proj/dump-json)." [gid] (read-graph gid (fn [db _] (proj/dump-json db gid))))
+(defn rows-json
+  "Every current row as one JSON string (proj/dump-json), with the batch seq
+   it stands at — a browser seeded from it pulls from exactly there."
+  [gid]
+  (read-graph gid (fn [db g] (let [j (proj/dump-json db gid)] (str "{\"seq\":" (:seq g) "," (subs j 1))))))
+
+;; --- graphs folded from a filtered log (wiki/Graph-Store.md § Backend mode, step 2) ---
+;; The browser keeps no log in backend mode; what still needs one asks here.
+;; ponytail: folded in memory on every new head (the JVM folds a 40k-topic
+;; log in seconds); one entry per graph — an LRU when several views matter.
+
+(defonce ^:private head-kgs (atom {}))    ; gid → [event count, the graph as it stands]
+(defonce ^:private views (atom {}))       ; gid → [[event count params] JSON]
+
+(defn- head-kg [gid n evs]
+  (let [[k v] (get @head-kgs gid)]
+    (if (= k n) v (let [v (fold/kg evs)] (swap! head-kgs assoc gid [n v]) v))))
+
+(defn view
+  "The graph folded from a filtered log, in `rows-json`'s shape plus \"cut\"
+   and \"changes\". `course` (and `pin`): what a learner pinned at that
+   publication sees (`fold/events-at`; a pin missing from the log → the
+   newest publication), with how many events since it change the course
+   (`fold/course-changes`, on the graph as it stands). `valid` / `recorded`
+   (ms): the graph as it stood (`fold/events-as-of`)."
+  [gid {:keys [course pin valid recorded] :as params}]
+  (let [st (store)]
+    (locking (lock-of gid)
+      (let [g (loaded st gid)
+            n (event-count g)
+            [k v] (get @views gid)]
+        (if (= k [n params])
+          v
+          (let [evs (vec (mapcat second (:batches g)))
+                newest (when course (fold/publication-cut evs course))
+                cut (when course (if (and pin (some #(= pin (:ev/id %)) evs)) pin newest))
+                shown (cond course (fold/events-at evs cut)
+                            (or valid recorded) (fold/events-as-of evs (cond-> {} valid (assoc :valid valid) recorded (assoc :recorded recorded)))
+                            :else evs)
+                changes (when (and course newest) (fold/course-changes (head-kg gid n evs) evs newest (get-in (head-kg gid n evs) [:courses course])))
+                v (proj/kg->dump-json (fold/kg shown) {"head" n "lastId" (:ev/id (peek evs)) "cut" cut "newest" newest "changes" changes})]
+            (swap! views assoc gid [[n params] v])
+            v))))))
 
 (defn changes-since [gid n] (read-graph gid (fn [db _] (proj/changes-since db gid n))))
 

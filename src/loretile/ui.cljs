@@ -1001,6 +1001,8 @@
       ;; graph describing types defaults to the blueprint look
       [:div.map-wrap {:class (str "scheme-" (color-scheme kg))}
        [:div.map-tools [legend-btn] [layout-btn] [fullscreen-btn] [asof-btn] [filter-btn] [merge-badge]]
+       ;; backend mode: the graph's seed is on its way from the server
+       (when (store/loading?) [:div.hood-note.graph-loading (t :ui/server-graphs-loading)])
        ;; a big graph says what part of it the map shows, and how to move
        (when-let [{:keys [centre ids]} (hood kg)]
          [:div.hood-note (t :ui/hood-note {"{n}" (count ids) "{m}" (count (:concepts kg))
@@ -2238,9 +2240,11 @@
           [:a.btn.primary.take-course {:href (str "#/learn/" id)} [icons/icon :graph] (t :ui/take-course)]
           ;; the other half of publish-and-pin: without this the cut can never
           ;; advance, so edits made after publishing reach NOBODY, ever
-          (let [head (store/graph-events @store/current)
-                cut (fold/publication-cut head id)
-                changed (fold/course-changes kg head cut course)]
+          (let [changed (if @store/remote?
+                          ;; backend mode: the server counts them (no log here); 0 while it answers
+                          (or (:changes (sync/view @store/current {:course id})) 0)
+                          (let [head (store/graph-events @store/current)]
+                            (fold/course-changes kg head (fold/publication-cut head id) course)))]
             [:button.btn.republish
              {:disabled (or (zero? changed) (not (every? :ready? targets)) (some :deprecated? prereqs))
               :title (if (and (every? :ready? targets) (not-any? :deprecated? prereqs))
@@ -2516,6 +2520,7 @@
        :bad-object-link (t :ui/error-bad-object-link)
        :merge-unavailable (t :ui/merge-error {"{e}" detail})
        :past-view (t :ui/error-past-view)
+       :not-loaded (t :ui/error-not-loaded)
        (pr-str [error detail])))
 
 (defn error-banner []

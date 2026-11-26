@@ -795,6 +795,7 @@
    :ui/asof-recorded {:ru "Известно к" :de "Bekannt bis" :en "As known by"}
    :ui/asof-now {:ru "Сейчас" :de "Jetzt" :en "Now"}
    :ui/error-past-view {:ru "Вы смотрите прошлое состояние графа — изменения отключены. Нажмите «Сейчас»."
+   :ui/error-not-loaded {:ru "Граф ещё загружается с сервера — повторите через мгновение." :de "Der Graph wird noch vom Server geladen — gleich noch einmal versuchen." :en "The graph is still loading from the server — try again in a moment."}
                         :de "Sie sehen einen früheren Stand des Graphen — Bearbeiten ist aus. Drücken Sie „Jetzt“."
                         :en "You are looking at a past state of the graph — editing is off. Press “Now”."}
 
