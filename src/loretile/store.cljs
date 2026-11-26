@@ -37,6 +37,10 @@
 ;; called with [graph-id event] after every event stored HERE (an edit, an
 ;; undo, a copy into another graph) — loretile.sync notes it as pending
 (defonce on-append (atom nil))
+;; while a unit of work runs (`as-one!`): the graphs it appended to — they
+;; are announced once it ends, so its events reach the server as ONE batch
+(defonce ^:private held (atom nil))
+(defn- appended! [gid e] (if @held (swap! held conj gid) (some-> @on-append (apply [gid e]))))
 (declare import-edn! read-log sync-bound! load-registry!)
 
 ;; the fold is pure, so it is cached on the identity of the event vector:
@@ -579,7 +583,7 @@
           ;; «saved» for work that was gone on reload (review 2026-10-16 A1)
           (if (persist!)
             (do (reset! last-error nil)
-                (some-> @on-append (apply [@current e]))
+                (appended! @current e)
                 ;; an edit undo can reverse goes on this graph's stack; a fresh
                 ;; edit forgets what was undone (redo only follows undo)
                 ;; never the author's naming: its reverse names others (or
@@ -591,6 +595,23 @@
                 (when (:ontology-graph? (kg)) (sync-bound! @current))
                 nil)
             (do (swap! events pop) @last-error))))))))
+
+(defn as-one!
+  "Run `f`, one unit of work (a card: a topic with its material and
+   questions): the events it appends are announced when it ends, so they go
+   to the server as ONE batch, one request (server-first, wiki/Graph-Store.md
+   § Backend mode). ponytail: a refusal takes back only the refused event and
+   the rest goes again (sync/sync!) — whole-card take-back if that ever bites;
+   the page's guard is the server's, so a refusal there is rare. Nested calls
+   join the outer one."
+  [f]
+  (if @held
+    (f)
+    (do (reset! held #{})
+        (try (f)
+             (finally (let [gs @held]
+                        (reset! held nil)
+                        (doseq [g gs] (some-> @on-append (apply [g nil])))))))))
 
 ;; --- the ontology as its own graph (wiki/Ontology-Graph.md) ------------------
 
@@ -611,7 +632,7 @@
               err (if (= gid @current)
                     (do (reset! events evs) (when-not (persist!) (swap! events pop) false))
                     (when-not (shelve! gid evs) false))]
-          (when (nil? err) (some-> @on-append (apply [gid e])))
+          (when (nil? err) (appended! gid e))
           err))))
 
 (defn rename-graph!
@@ -828,6 +849,21 @@
     (when (and (shelve! @current @events)
                (open! id [e] (conj @graphs {:id id :title title :ontology fold/types-ontology})))
       id)))
+
+(defn create-graph!
+  "A new graph titled `title`, opened: on the built-in learning ontology
+   (\"learning\"), as an ontology graph (`fold/types-ontology`), or bound to
+   an ontology graph of this device (its id). Its id, or nil (the open graph
+   could not be shelved, or the binding was refused — then `last-error`).
+   The Graphs view's form and the assistant's create-graph both make graphs here."
+  [title ontology]
+  (cond
+    (or (nil? ontology) (= "learning" ontology)) (new-graph! title)
+    (= fold/types-ontology ontology) (new-ontology-graph! title)
+    :else (when-let [gid (new-graph! title)]
+            (if-let [err (bind! gid ontology)]
+              (do (reset! last-error err) nil)
+              gid))))
 
 (defn- download! [text type fname]
   (let [a (js/document.createElement "a")]

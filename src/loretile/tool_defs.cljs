@@ -112,7 +112,95 @@
                          (str cid " — " (:title c) " [graph «" gtitle "», " (or (:locale c) "any") "]: "
                               (:total p) " topics, already proven " (:closed p) ", " (name (:state p))))))))})
 
+(defn- ontology-of
+  "A registry row's ontology as the model reads it: learning, the built-in
+   types ontology, or the ontology graph it is bound to."
+  [{:keys [ontology]}]
+  (cond (nil? ontology) "learning"
+        (= fold/types-ontology ontology) "ontology (this graph describes types and relations)"
+        :else (str "bound to ontology graph " ontology " «" (store/graph-title ontology) "»")))
+
+;; the server graphs list-graphs last saw — open-graph's card is labelled
+;; synchronously, and a server graph is known only by that listing
+(defonce ^:private server-listed (atom {}))
+
+(tools/register!
+ {:name "list-graphs" :confirm :auto
+  :args {}
+  ;; i18n-ignore
+  :doc "графы: какие есть на этом устройстве (id, название, онтология, какой открыт) и — если есть сервер — какие хранит сервер, но их ещё нет здесь"
+  :handler
+  (fn [_ _]
+    (let [here (str "on this device:\n"
+                    (str/join "\n" (for [g @store/graphs]
+                                     (str (:id g) " — «" (:title g) "» [" (ontology-of g) "]"
+                                          (when (= (:id g) @store/current) " (open now)")))))]
+      (if-not sync/enabled?
+        here
+        (-> (p/let [rows (sync/server-graphs)
+                    mine (set (map :id @store/graphs))
+                    others (remove #(mine (:id %)) rows)]
+              (reset! server-listed (into {} (map (juxt :id identity) rows)))
+              (str here "\n\non the server, not on this device yet:\n"
+                   (if (seq others)
+                     (str/join "\n" (for [g others] (str (:id g) " — «" (or (:title g) (:id g)) "» (" (or (:events g) 0) " events)")))
+                     "none")))
+            (p/catch (fn [_] (str here "\n\nthe server did not answer")))))))})
+
 ;; --- actions: one-tap cards, never run by the model (:action) ----------------
+
+(defn- ontology-choice
+  "The ontology a new graph may take, normalized, or nil when there is no
+   such choice: learning (default), the types ontology, or a whole ontology
+   graph of this device."
+  [o]
+  (let [o (some-> o str str/trim not-empty)]
+    (cond (or (nil? o) (= "learning" o)) "learning"
+          (#{fold/types-ontology "types"} o) fold/types-ontology
+          (and (store/graph-on-device? o) (store/whole-ontology? o)) o)))
+
+(defn- opened!
+  "The assistant opened graph `gid` (nil: it did not). Cards left from the
+   graph before would hold the conversation (they belong to another graph,
+   chat/foreign?): that sitting goes to the history, where it can be
+   reopened, and a new one starts here, saying which graph is open."
+  [gid]
+  (when gid
+    (when (seq @chat/cards) (chat/new-conversation!))
+    (swap! chat/msgs conj {:who :sys :text (t :chat/graph-opened {"{title}" (store/graph-title gid)})})))
+
+(tools/register!
+ {:name "create-graph" :confirm :action
+  :args {:title "the new graph's name" :ontology "learning | ontology | <ontology graph id from list-graphs>"}
+  ;; i18n-ignore
+  :doc "создать новый граф и открыть его: ontology — learning (учебный, по умолчанию), ontology (граф, описывающий типы и связи) или id графа-онтологии этого устройства (данные по ней)"
+  ;; the title is model text on a button: capped
+  :label (fn [_ {:keys [title ontology]}]
+           (let [tt (str/trim (str title)) o (ontology-choice ontology)]
+             (when (and (seq tt) o)
+               (t :chat/action-create-graph
+                  {"{title}" (if (> (count tt) 60) (str (subs tt 0 60) "…") tt)
+                   "{ontology}" (cond (= "learning" o) (t :ui/ontology-learning-builtin)
+                                      (= fold/types-ontology o) (t :ui/ontology-types-builtin)
+                                      :else (store/graph-title o))}))))
+  :run (fn [_ {:keys [title ontology]}]
+         (opened! (store/create-graph! (str/trim (str title)) (ontology-choice ontology))))})
+
+(tools/register!
+ {:name "open-graph" :confirm :action
+  :args {:id "graph-id from list-graphs"}
+  ;; i18n-ignore
+  :doc "открыть граф: с этого устройства или — с сервера (из list-graphs) — принести его сюда и открыть"
+  :label (fn [_ {:keys [id]}]
+           (let [id (str id)]
+             (cond (= id @store/current) nil
+                   (store/graph-on-device? id) (t :chat/action-open-graph {"{title}" (store/graph-title id)})
+                   (get @server-listed id) (t :chat/action-open-graph {"{title}" (or (:title (get @server-listed id)) id)}))))
+  :run (fn [_ {:keys [id]}]
+         (let [id (str id)]
+           (if (store/graph-on-device? id)
+             (opened! (when (store/switch-graph! id) id))
+             (when-let [g (get @server-listed id)] (p/then (sync/open-server-graph! g) opened!)))))})
 
 (tools/register!
  {:name "go-to-node" :confirm :action

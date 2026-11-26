@@ -25,6 +25,7 @@ const fail = (m) => { console.error('SERVER CHECK FAILED: ' + m); process.exitCo
 (async () => {
   const seen = [];
   const embedded = []; // every input the fake /embeddings received
+  const embeddedAt = new Map(); // input → when it arrived
   // a fake vector: letter counts folded into 16 dimensions
   const vec = (t) => { const v = new Array(16).fill(0); for (const ch of t.toLowerCase()) v[ch.codePointAt(0) % 16]++; return v; };
   const gateway = http.createServer((req, res) => {
@@ -37,6 +38,7 @@ const fail = (m) => { console.error('SERVER CHECK FAILED: ' + m); process.exitCo
       if (ok && req.url === '/v1/embeddings') {
         const input = JSON.parse(body).input;
         embedded.push(...input);
+        for (const t of input) embeddedAt.set(t, Date.now());
         return res.end(JSON.stringify({ data: input.map((t, i) => ({ index: i, embedding: vec(t) })) }));
       }
       res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: { total_tokens: 3 } }));
@@ -184,6 +186,18 @@ const fail = (m) => { console.error('SERVER CHECK FAILED: ' + m); process.exitCo
 
     // --- embeddings under the daily cap -------------------------------------------------
     await sleep(11000); // two embedder rounds: every pending text so far
+    // an edit's new text is embedded right after its commit (the POST nudges the
+    // embedder), not at the next 5 s round: three edits, each within 1 s — by
+    // the round alone that would be chance (< 1 %)
+    // (a graph of its own: the demo's head and texts stay what the steps below expect)
+    const arrived = (text) => [...embeddedAt.keys()].find((k) => k.includes(text));
+    for (let i = 1; i <= 3; i++) {
+      const text = `Свежий текст ${i}`, t0 = Date.now();
+      r = await post('fresh', `{:after ${i - 1} :events [{:ev/id "f-${i}" :ev/ns "fresh" :ev/actor "a" :ev/ts 9 :ev/type :change :ops [[:node-set "n-${i}" {:title "${text}"}]]}]}`);
+      for (let k = 0; k < 30 && !arrived(text); k++) await sleep(100);
+      const ms = arrived(text) ? embeddedAt.get(arrived(text)) - t0 : null;
+      if (r.status !== 200 || ms === null || ms > 1000) fail(`an edit's new text is embedded right after its commit (edit ${i}: ${ms === null ? 'not within 3 s' : ms + ' ms'})`);
+    }
     const sqlTexts = embedded.length;
     if (sqlTexts < 43) fail('the embedder embeds the demo\'s texts: ' + sqlTexts);
     r = await get('/sql/search?q=' + encodeURIComponent(word));

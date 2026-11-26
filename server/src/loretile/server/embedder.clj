@@ -8,7 +8,8 @@
    CLOSED: past it nothing is embedded until the next UTC day. A failed
    embedding never fails a write; the node stays pending and is retried.
 
-   ponytail: polls every 5 s; a nudge from append! when freshness matters."
+   Runs after every stored batch (`nudge!`, from the events POST) and every
+   5 s as catch-up (a rebuild, a restart, texts a failed call left)."
   (:require [clojure.data.json :as json]
             [loretile.server.config :as config]
             [loretile.server.log :refer [log]]
@@ -16,7 +17,8 @@
             [loretile.server.token :as token])
   (:import (java.net URI)
            (java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers HttpResponse HttpResponse$BodyHandlers)
-           (java.time Duration LocalDate ZoneOffset)))
+           (java.time Duration LocalDate ZoneOffset)
+           (java.util.concurrent LinkedBlockingQueue TimeUnit)))
 
 (defn model
   "The vectors' model key, or nil when embeddings are not configured."
@@ -60,6 +62,14 @@
                            (.POST (HttpRequest$BodyPublishers/ofString body)))]
                  (when tok (.header b auth-header (str auth-prefix (:token tok))))
                  (.send ^HttpClient @http (.build b) (HttpResponse$BodyHandlers/ofString))))
+        ;; a pooled connection the gateway closed while idle answers nothing
+        ;; («header parser received no bytes»): the request was never read —
+        ;; sent once more on a fresh connection (it stayed counted, and the
+        ;; retry spent the day's cap on one blip — make checks 2026-11-26)
+        ;; Not a timeout: that request may have been read, and billed.
+        send (fn [tok] (try (send tok)
+                            (catch java.net.http.HttpTimeoutException e (throw e))
+                            (catch java.io.IOException _ (send tok))))
         tok (token/current)
         ^HttpResponse r (send tok)
         ^HttpResponse r (if (and tok (= 401 (.statusCode r)))
@@ -97,15 +107,26 @@
             (proj/put-vectors! db m (map vector (map first p) vs))
             (recur)))))))
 
+(defonce ^:private nudges (LinkedBlockingQueue.))
+
+(defn nudge!
+  "New texts were stored: embed them now rather than at the next poll."
+  []
+  (.offer nudges :go))
+
 (defn start!
   "The background embedder over the projection `@db`."
   [db]
   (Thread/startVirtualThread
    (fn []
-     ;; every 5 s; after a failure the wait doubles, up to 10 minutes
+     ;; every 5 s or at a nudge; after a failure the wait doubles, up to 10
+     ;; minutes, and nudges wait too — each edit must not retry a gateway
+     ;; that is down
      (loop [wait 5000]
        (let [ok? (try (when (model) (run-once! @db)) true
                       (catch Exception e (log "embedding failed, retried in" (quot (min 600000 (* 2 wait)) 1000) "s:" (ex-message e)) false))
              wait (if ok? 5000 (min 600000 (* 2 wait)))]
-         (Thread/sleep wait)
+         (if ok?
+           (do (.poll nudges wait TimeUnit/MILLISECONDS) (.clear nudges))
+           (do (Thread/sleep wait) (.clear nudges)))
          (recur wait))))))

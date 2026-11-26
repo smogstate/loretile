@@ -2309,12 +2309,8 @@
                            (let [tt (str/trim @title)]
                              (when (seq tt)
                                (reset! new-graph-form nil)
-                               (cond
-                                 (= "learning" ontology) (do (store/new-graph! tt) (goto! "#/"))
-                                 (= fold/types-ontology ontology) (do (store/new-ontology-graph! tt) (goto! "#/ontology"))
-                                 :else (when-let [gid (store/new-graph! tt)]
-                                         (when-let [err (store/bind! gid ontology)] (reset! store/last-error err))
-                                         (goto! "#/"))))))}
+                               (store/create-graph! tt ontology)
+                               (goto! (if (= fold/types-ontology ontology) "#/ontology" "#/")))))}
               (t :ui/create)]
              [:button {:on-click #(reset! new-graph-form nil)} (t :ui/cancel)]]]]))))))
 

@@ -870,12 +870,12 @@
 ;; 2026-10-15: the intake of a process map was told it could start a course)
 (defn- intake-reads []
   (if (profile/learnable? (store/profile))
-    #{"search-nodes" "open-node" "list-courses" "learner-gaps"}
-    #{"search-nodes" "open-node" "check-cqs"}))
+    #{"search-nodes" "open-node" "list-courses" "learner-gaps" "list-graphs"}
+    #{"search-nodes" "open-node" "check-cqs" "list-graphs"}))
 (defn- intake-acts []
   (if (profile/learnable? (store/profile))
-    #{"go-to-node" "start-course" "draft-exercises"}
-    #{"go-to-node"}))
+    #{"go-to-node" "start-course" "draft-exercises" "create-graph" "open-graph"}
+    #{"go-to-node" "create-graph" "open-graph"}))
 
 (defn- ask-with-tools!
   "An intake call in which the model may LOOK first (tools/converse!). The
@@ -1725,45 +1725,52 @@
 (defn- question-event [data]
   (ops/raise-question (str "q-" (random-uuid)) (:concept data) (:question data)))
 
+(declare accept-card!)
+
 (defn accept! [{:keys [card data] :as c}]
   (if (foreign?)
     (refuse-foreign!)
-    ;; a card from a MERGE FILE (loretile.merge) carries `:ev`, the event to
-    ;; append verbatim — the file's ids and actor are its provenance
-    (let [err
-          (case card
-            :concept (store/append! (or (:ev c) (ops/accept-node (concept-payload data))))
-            :edge (store/append! (or (:ev c)
-                                     (ops/accept-edge
-                                      (cond-> {:from (:from data) :to (:to data)
-                                               :type (keyword (or (:type data) (default-relation)))
-                                               :provenance :llm-drafted
-                                               :justification (:why data)}
-                                        ;; the card said «inference, not a quote» — so does the graph
-                                        (false? (:stated data)) (assoc :inferred? true)))))
-            :object (store/append! (or (:ev c) (object-event data)))
-            :question (store/append! (or (:ev c) (question-event data)))
-            :item (or (store/append! (:ev c)) (store/append! (ops/item-status (:id data) :active)))
-            :change (store/append! (:ev c))
-            (:type :relation) (store/append! (vocab-event c (store/kg)))
-            ;; a drafted exercise: the runtime judged it, the author accepts it
-            :exercise (let [id (str "i-" (random-uuid))]
-                        (store/append! (ops/add-item {:id id :primary-concept-id (:concept data)
-                                                      :level :apprentice :kind :exercise :locale (store/locale-for-new)
-                                                      :origin (if (store/personal?) :generated :drafted) :spec (:spec data)}
-                                                     :active))))]
-      (if err
-        ;; the guard said no (a loop, a misfit…): the banner says why, and the
-        ;; card stops offering an accept that can only be refused again —
-        ;; discard stays (business dogfood 2026-10-15: a reversed `triggers`
-        ;; link sat at the top of the pile, clickable, for ever)
-        (swap! cards (fn [cs] (mapv #(if (= % c) (assoc % :refused true) %) cs)))
-        (do
-          ;; the topic's ticked drafts and questions go in with it
-          (when (= :concept card)
-            (doseq [o (:objects c) :when (:on? o)] (store/append! (or (:ev o) (object-event o))))
-            (doseq [q (:questions c) :when (:on? q)] (store/append! (or (:ev q) (question-event q)))))
-          (resolve-card! c))))))
+    ;; ONE unit of work: a topic and its ticked material and questions reach
+    ;; the server as one batch (store/as-one!)
+    (store/as-one! #(accept-card! c))))
+
+(defn- accept-card! [{:keys [card data] :as c}]
+  ;; a card from a MERGE FILE (loretile.merge) carries `:ev`, the event to
+  ;; append verbatim — the file's ids and actor are its provenance
+  (let [err
+        (case card
+          :concept (store/append! (or (:ev c) (ops/accept-node (concept-payload data))))
+          :edge (store/append! (or (:ev c)
+                                   (ops/accept-edge
+                                    (cond-> {:from (:from data) :to (:to data)
+                                             :type (keyword (or (:type data) (default-relation)))
+                                             :provenance :llm-drafted
+                                             :justification (:why data)}
+                                      ;; the card said «inference, not a quote» — so does the graph
+                                      (false? (:stated data)) (assoc :inferred? true)))))
+          :object (store/append! (or (:ev c) (object-event data)))
+          :question (store/append! (or (:ev c) (question-event data)))
+          :item (or (store/append! (:ev c)) (store/append! (ops/item-status (:id data) :active)))
+          :change (store/append! (:ev c))
+          (:type :relation) (store/append! (vocab-event c (store/kg)))
+          ;; a drafted exercise: the runtime judged it, the author accepts it
+          :exercise (let [id (str "i-" (random-uuid))]
+                      (store/append! (ops/add-item {:id id :primary-concept-id (:concept data)
+                                                    :level :apprentice :kind :exercise :locale (store/locale-for-new)
+                                                    :origin (if (store/personal?) :generated :drafted) :spec (:spec data)}
+                                                   :active))))]
+    (if err
+      ;; the guard said no (a loop, a misfit…): the banner says why, and the
+      ;; card stops offering an accept that can only be refused again —
+      ;; discard stays (business dogfood 2026-10-15: a reversed `triggers`
+      ;; link sat at the top of the pile, clickable, for ever)
+      (swap! cards (fn [cs] (mapv #(if (= % c) (assoc % :refused true) %) cs)))
+      (do
+        ;; the topic's ticked drafts and questions go in with it
+        (when (= :concept card)
+          (doseq [o (:objects c) :when (:on? o)] (store/append! (or (:ev o) (object-event o))))
+          (doseq [q (:questions c) :when (:on? q)] (store/append! (or (:ev q) (question-event q)))))
+        (resolve-card! c)))))
 
 (defn accept-all!
   "Accept these cards one by one, each through the guard (a refusal stays

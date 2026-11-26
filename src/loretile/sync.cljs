@@ -130,18 +130,26 @@
               id)
           (do (swap! sync-state (fn [st] (if prev (assoc st id prev) (dissoc st id)))) nil))))))
 
+(defonce ^:private booted (atom nil))   ; how this boot built the graph: :rows | nil (folded here)
+
 (defn boot-kg!
-  "Boot, a big log already on this device: built from the server's rows when
-   everything here is confirmed and the rows hold exactly it. A promise."
+  "Boot: the open graph built from the server's rows — ANY size (wiki/Graph-Store.md
+   § Backend mode: the page's graph is the server's projection, not a refold)
+   — when everything here is confirmed and the rows hold exactly it. Else
+   (a never-synced graph, a log behind the server, no answer) the page folds
+   it as before and sync catches up. A promise."
   []
   (let [gid @store/current
         evs @store/events
         {:keys [confirmed]} (entry gid)]
-    (if (and enabled? (= confirmed (count evs)) (> (count evs) 5000))
+    (if (and enabled? (pos? (count evs)) (= confirmed (count evs)))
       (-> (p/let [rows (fetch-text (str "/" (js/encodeURIComponent gid) "/rows"))]
-            (seed-from-rows! evs rows))
+            (when (seed-from-rows! evs rows) (reset! booted :rows)))
           (p/catch (fn [_] nil)))
       (p/resolved nil))))
+
+;; the checks read how the graph was built at boot
+(set! (.-loretileBootedFrom js/window) (fn [] (some-> @booted name)))
 
 ;; --- one cycle: pull what others stored, push what is provisional ---------------
 
@@ -177,11 +185,15 @@
    events stored just before it laid in front. Resolves to how many went."
   [gid]
   (let [log (store/graph-events gid)
-        {:keys [seq confirmed]} (entry gid)
+        ;; `known`, never `seq`: a local named seq shadowed clojure.core/seq and
+        ;; `(seq others)` below threw after EVERY stored push — the edits were
+        ;; taken back as «unreachable» until the next pull restored them
+        ;; (2026-11-24 → 2026-11-26)
+        {known :seq confirmed :confirmed} (entry gid)
         tail (subvec log (min confirmed (count log)))]
     (if (empty? tail)
       0
-      (p/let [{pushed-seq :seq events :events} (api-post (str "/" (js/encodeURIComponent gid) "/events") {:events tail :after seq})]
+      (p/let [{pushed-seq :seq events :events} (api-post (str "/" (js/encodeURIComponent gid) "/events") {:events tail :after known})]
         (let [log (store/graph-events gid)          ; edits made meanwhile stay provisional, after
               sent (set (map :ev/id tail))
               have (set (map :ev/id log))
@@ -198,8 +210,10 @@
 
 (defn sync!
   "Pull, then push the provisional edits. Promise of {:pulled n :pushed n};
-   one cycle per graph at a time (an edit during one asks for another)."
-  [gid]
+   one cycle per graph at a time (an edit during one asks for another).
+   `push-only?` (an edit): no pull first — ONE request, the POST's answer
+   already brings what others stored (wiki/Graph-Store.md § Backend mode)."
+  [gid & [{:keys [push-only?]}]]
   (cond
     (not enabled?) (p/resolved nil)
     (@busy gid) (do (swap! again conj gid) (p/resolved nil))
@@ -207,8 +221,10 @@
     (do
       (swap! busy conj gid)
       (swap! status assoc gid :syncing)
-      (-> (p/let [{server-seq :seq events :events} (api-get (str "/" (js/encodeURIComponent gid) "?after=" (:seq (entry gid))))
-                  pulled (lay-in! gid events server-seq)
+      (-> (p/let [pulled (if push-only?
+                           0
+                           (p/let [{server-seq :seq events :events} (api-get (str "/" (js/encodeURIComponent gid) "?after=" (:seq (entry gid))))]
+                             (lay-in! gid events server-seq)))
                   pushed (push! gid)]
             (swap! status assoc gid :ok)
             {:pulled pulled :pushed pushed})
@@ -253,7 +269,7 @@
     (js/localStorage.removeItem "loretile-conflicts")   ; local-first's conflict cards: gone with it
     (cut-back!)
     ;; every edit, in any graph, goes to the server now
-    (reset! store/on-append (fn [gid _] (sync! gid)))
+    (reset! store/on-append (fn [gid _] (sync! gid {:push-only? true})))
     (js/setInterval #(sync! @store/current) 15000)
     (.addEventListener js/window "focus" #(sync! @store/current))
     (add-watch store/current ::open (fn [_ _ o n] (when (not= o n) (sync! n))))

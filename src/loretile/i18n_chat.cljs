@@ -191,6 +191,9 @@
    :chat/action-hide {:ru "Скрыть" :de "Ausblenden" :en "Hide"}
    :chat/action-go-topic {:ru "Открыть тему «{title}»" :de "Thema „{title}“ öffnen" :en "Open the topic “{title}”"}
    :chat/action-start-course {:ru "Открыть курс «{title}» как ученик" :de "Kurs „{title}“ als Lernende öffnen" :en "Open the course “{title}” as a learner"}
+   :chat/action-create-graph {:ru "Создать граф «{title}» · {ontology}" :de "Graph „{title}“ anlegen · {ontology}" :en "Create the graph “{title}” · {ontology}"}
+   :chat/action-open-graph {:ru "Открыть граф «{title}»" :de "Graph „{title}“ öffnen" :en "Open the graph “{title}”"}
+   :chat/graph-opened {:ru "Открыт граф «{title}»." :de "Graph „{title}“ ist geöffnet." :en "The graph “{title}” is open."}
    :chat/action-draft {:ru "Предложить упражнения по теме «{title}»" :de "Übungen zum Thema „{title}“ vorschlagen" :en "Draft exercises for “{title}”"}
    ;; --- the ontology interview (wiki/Profiles.md §CQ) ---
    :chat/mode-ontology {:ru "режим онтологии" :de "Ontologiemodus" :en "ontology mode"}

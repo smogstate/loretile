@@ -216,6 +216,8 @@
       (let [body (edn/read-string (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8))]
         (if (and (map? body) (sequential? (:events body)))
           (let [r (graphs/append! gid (vec (:events body)) (:after body))]
+            ;; stored: the new texts are embedded now, not at the next poll
+            (when (pos? (or (:stored r) 0)) (embedder/nudge!))
             (send-edn! ex (if (:error r) 422 200) r))
           (send-text! ex 400 "body must be {:events [...] :after n}")))
       (and tail (not= "events" tail) (= "GET" method)) (graph-read! ex gid tail node-id)

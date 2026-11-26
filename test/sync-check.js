@@ -87,8 +87,23 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     check(await B.evaluate(() => document.querySelectorAll('.node').length) === 1 && /Икс/.test(await log(B)), 'B opens it and has A\'s node');
     check(await B.evaluate(() => window.loretileGraphStore.appGraphIsFold()), 'B\'s graph, built from the server\'s rows, is exactly the fold of the log it received');
 
-    // an edit in B reaches A
+    // backend mode, the clean way (wiki/Graph-Store.md): a boot builds the graph
+    // from the server's rows at ANY size, never a refold here
+    await B.reload({ waitUntil: 'networkidle0' }); await sleep(800);
+    check(await B.evaluate(() => window.loretileBootedFrom()) === 'rows' && await B.evaluate(() => window.loretileGraphStore.appGraphIsFold()),
+      'B\'s reload builds its small graph from the server\'s rows, and it is the fold of the log');
+
+    // an edit in B reaches A — in ONE request: the POST, no pull before it
+    await B.evaluate(() => { window.__api = []; const f = window.fetch;
+      window.fetch = (u, o) => { if (String(u).includes('api/graphs')) window.__api.push((o && o.method) || 'GET'); return f(u, o); }; });
     await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:owner "Борис"}]]}`);
+    await sleep(800);
+    const calls = await B.evaluate(() => window.__api);
+    check(calls.length === 1 && calls[0] === 'POST', `an edit makes exactly one request, a POST (${calls.join(', ') || 'none'})`);
+    // a stored push used to throw in the browser (a local `seq` shadowed
+    // clojure.core/seq): the edit was taken back as «unreachable» until a pull
+    check(/:owner "Борис"/.test(await log(B)) && await B.evaluate(() => cljs.core.deref(loretile.store.last_error)) === null,
+      'the stored edit stays, and no error banner');
     await syncNow(B); await syncNow(A);
     check(/:owner "Борис"/.test(await log(A)), 'B\'s property reaches A');
     // phase C: what the other did, as pills
@@ -117,7 +132,18 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await B.goto(BASE + '#/chat', { waitUntil: 'networkidle0' }); await sleep(400);
     check(await B.$('.card-conflict') === null && await B.$('.conflict-badge') === null, 'and nobody gets a conflict card');
 
-    // A removes the node; B, not yet knowing, edits it: the server refuses B's edit
+    // A removes the node; B, not yet knowing, edits it: the server refuses B's edit.
+    // «Not yet knowing» is made sure: B pulls every 15 s, and under load that pull
+    // landed in between (make checks, 2026-11-26) — for this step B's pulls answer
+    // «nothing new»; its edit still goes to the server
+    await B.evaluate((g) => { window.__pullFetch = window.fetch;
+      window.fetch = (u, o) => {
+        if (!(o && o.method === 'POST') && new RegExp('api/graphs/' + g + '\\?after=').test(String(u))) {
+          const known = cljs.core.get(cljs.core.get(cljs.core.deref(loretile.sync.sync_state), g), cljs.core.keyword('seq'));
+          return Promise.resolve(new Response(`{:seq ${known} :events []}`, { status: 200 }));
+        }
+        return window.__pullFetch(u, o);
+      }; }, gid);
     await append(A, `{:ev/type :change :ops [[:node-remove "${nid}"]]}`);
     await syncNow(A);
     await B.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(300);
@@ -126,7 +152,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await syncNow(B); await sleep(300);
     check(/Сервер не принял/.test(await B.$eval('div.error', (e) => e.textContent).catch(() => '')), 'the server refuses it, and B\'s banner says so');
     check(!/:priority "высокий"/.test(await log(B)) && !/:priority "высокий"/.test(await onServer(gid)), 'the refused edit is gone from B, and never reached the server');
-    await B.evaluate(() => cljs.core.reset_BANG_(loretile.store.last_error, null));
+    await B.evaluate(() => { window.fetch = window.__pullFetch; cljs.core.reset_BANG_(loretile.store.last_error, null); });
 
     // the server out of reach: no offline — the edit goes back
     await B.evaluate(() => { window.__fetch = window.fetch;
@@ -194,8 +220,9 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await B.evaluate((oid) => loretile.store.switch_graph_BANG_(oid), made);
     await syncNow(B);
     const bData = await B.evaluate((gid) => loretileLog(gid), dgid);
-    check(/:ontology-copy \{[^]*:label "роль"/.test(bData),
-      'A adds a type to the ontology; when B syncs the ontology graph, B\'s bound data graph takes the new copy');
+    const copied = /:ontology-copy \{[^]*:label "роль"/.test(bData);
+    check(copied, 'A adds a type to the ontology; when B syncs the ontology graph, B\'s bound data graph takes the new copy'
+      + (copied ? '' : ` (B's last error ${await B.evaluate(() => cljs.core.pr_str(cljs.core.deref(loretile.store.last_error)))}; on the server: ${/роль/.test(await onServer(dgid))}; B's data graph ends …${bData.slice(-400)})`));
   } finally {
     await browser.close();
     server.kill();

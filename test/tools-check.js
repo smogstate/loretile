@@ -119,6 +119,34 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   check(/start-course is an action, not a read: propose it in "actions"/.test(calls[1].user), 'an action asked for as a read is refused, with the way to propose it');
   check(/#\/chat/.test(page.url()), 'and nothing ran');
 
+  // --- graphs: the assistant lists, creates and opens them (2026-11-26) --------
+  const firstGraph = await page.evaluate(() => cljs.core.deref(loretile.store.current));
+  await say([{ tools: [{ name: 'list-graphs', args: {} }] }, { concepts: [], note: 'Вот ваши графы.' }], 'какие у меня есть графы?');
+  calls = await intakeCalls();
+  check(calls[0].system.includes('list-graphs') && calls[0].system.includes('create-graph') && calls[0].system.includes('open-graph'),
+    'the author assistant is offered list-graphs, create-graph and open-graph');
+  check(/on this device:/.test(calls[1].user) && new RegExp(firstGraph + ' — «[^»]+» \\[learning\\] \\(open now\\)').test(calls[1].user),
+    'list-graphs names the graphs on this device, their ontology, and which is open');
+  await say([{ concepts: [], note: 'Создам граф.',
+               actions: [{ name: 'create-graph', args: { title: 'Процессы склада', ontology: 'learning' } },
+                         { name: 'create-graph', args: { title: 'Чужой', ontology: 'no-such-ontology' } },
+                         { name: 'open-graph', args: { id: firstGraph } }] }], 'создай граф «Процессы склада»');
+  // (a course card from the actions above is still on the pile: graph cards are told by their words)
+  let graphCards = await page.$$eval('.card-action', (els) => els.map((e) => e.textContent).filter((x) => /граф/.test(x)));
+  check(graphCards.length === 1 && /Создать граф «Процессы склада» · Обучение/.test(graphCards[0]),
+    `create-graph becomes one card; an unknown ontology and opening the graph already open are dropped (${graphCards.length})`);
+  check(await page.evaluate(() => cljs.core.deref(loretile.store.current)) === firstGraph, 'nothing is created before the tap');
+  const tap = (re) => page.evaluate((src) => [...document.querySelectorAll('.card-action')].find((c) => new RegExp(src).test(c.textContent)).querySelector('.action-do').click(), re);
+  await tap('Создать граф'); await sleep(500);
+  const made = await page.evaluate(() => ({ id: cljs.core.deref(loretile.store.current), title: loretile.store.graph_title(cljs.core.deref(loretile.store.current)) }));
+  check(made.id !== firstGraph && made.title === 'Процессы склада', 'one tap: the graph is created and open (' + made.title + ')');
+  check((await msgs()).some((x) => /Открыт граф «Процессы склада»/.test(x)), 'the assistant says which graph is open now');
+  await say([{ concepts: [], note: 'Открываю.', actions: [{ name: 'open-graph', args: { id: firstGraph } }] }], 'вернись к прежнему графу');
+  graphCards = await page.$$eval('.card-action', (els) => els.map((e) => e.textContent).filter((x) => /граф/.test(x)));
+  check(graphCards.length === 1 && /Открыть граф «/.test(graphCards[0]), 'open-graph becomes a card naming the graph');
+  await tap('Открыть граф'); await sleep(500);
+  check(await page.evaluate(() => cljs.core.deref(loretile.store.current)) === firstGraph, 'one tap: the first graph is open again');
+
   // --- course mode: the course form's composer is the assistant too ----------
   await page.goto(BASE + '#/course/new', { waitUntil: 'networkidle0' }); await sleep(500);
   check(/режим курса/.test(await text('.course-intake .mode-badge')), 'the course form\'s composer wears the course-mode badge');
