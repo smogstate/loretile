@@ -7,8 +7,10 @@
   (:require [cljs.reader :as reader]
             [clojure.string :as str]
             [reagent.core :as r]
+            [promesa.core :as p]
             [loretile.agent-md :as export]
             [loretile.fold :as fold]
+            [loretile.graph-rows :as graph-rows]
             [loretile.graph-store :as gs]
             [loretile.ops :as ops]
             [loretile.profile :as profile]
@@ -66,6 +68,20 @@
 (defonce fetch-seed (atom nil))   ; gid → fetch its seed (the server's rows)
 (defonce fetch-log (atom nil))    ; gid → promise of its whole log, from the server
 
+(defn after!
+  "`f` on a write's answer `r`: at once for a value (local mode), when it
+   resolves for a promise (backend mode — the server answers). What `f`
+   returns, or a promise of it."
+  [r f]
+  (if (p/promise? r) (p/then r f) (f r)))
+
+(defn after-all!
+  "`f` on the answers `rs` of several writes (in order): at once when every
+   one is a value, when all resolve when any is a promise (backend mode)."
+  [rs f]
+  (let [rs (vec rs)]
+    (if (some p/promise? rs) (p/then (p/all rs) f) (f rs))))
+
 (defonce ^:private kg-cache (atom [nil nil nil]))
 (defn- grew?
   "Is `new` the log `old` with events appended — the same events, by
@@ -104,35 +120,15 @@
       :else
       (let [v (fold/kg (fold/events-as-of evs at))] (reset! kg-cache [evs at v]) v)))))
 
-(defn- fold-onto
-  "Events onto a folded graph, one delta each → [graph [[event graph-before] …]]."
-  [g evs]
-  (reduce (fn [[g items] e] [(fold/apply-delta g (fold/delta (fold/map-reader g) e)) (conj items [e g])])
-          [g []] evs))
-
-(defn- remember-befores! [gid items keep?]
-  (swap! befores (fn [m] {:graph gid
-                          :by (vec (take-last 50 (into (if (and keep? (= (:graph m) gid)) (:by m) []) items)))})))
-
-(defonce ^:private remote-cache (atom nil))   ; [gid seed suffix graph]
-
 (defn- remote-kg
-  "Backend mode: the open graph = its seed with the suffix folded on (cheap:
-   the suffix is this session's events). An empty graph while the seed is on
-   its way (`loading?`); the past view is the server's fold of it (`views`),
-   HEAD until that arrives."
+  "Backend mode: the open graph is its seed — the server's rows, kept up to
+   date by the rows the server sends back (`apply-rows!`). Nothing is folded
+   here (wiki/Graph-Store.md § Backend mode, step 3): an edit shows once the
+   server stored it. Empty while the seed is on its way (`loading?`); the
+   past view is the server's fold of it (`views`), HEAD until that arrives."
   []
-  (let [gid @current evs @events at @as-of seed (get @seeds gid)
-        head (let [[cg cs ce cv] @remote-cache]
-               (cond
-                 (nil? seed) fold/empty-kg
-                 (and (= cg gid) (identical? cs seed) (identical? ce evs)) cv
-                 (and (= cg gid) (identical? cs seed) (grew? ce evs))
-                 (let [[v items] (fold-onto cv (subvec evs (count ce)))]
-                   (remember-befores! gid items true) (reset! remote-cache [gid seed evs v]) v)
-                 :else
-                 (let [[v items] (fold-onto (:kg seed) evs)]
-                   (remember-befores! gid items false) (reset! remote-cache [gid seed evs v]) v)))]
+  (let [gid @current at @as-of
+        head (or (:kg (get @seeds gid)) fold/empty-kg)]
     (if at (or (get @views [gid at]) head) head)))
 
 (defn loading?
@@ -335,19 +331,17 @@
   (or @remote? (save-log! id evs)))
 
 (defn graph-events
-  "The log of any graph, open or shelved — in backend mode only its SUFFIX
-   (the events since its seed): the server holds the rest."
+  "The log of any graph, open or shelved — in backend mode only its QUEUE:
+   the edits not yet stored by the server, which holds everything else."
   [id]
   (if (= id @current) @events (get @shelf id [])))
 
 (defn seed!
   "Backend mode: graph `gid` as the server's rows give it at event `head`.
-   Taken only while its suffix is empty — a seed is the graph BEFORE the
-   suffix, and a later one would fold the suffix twice."
+   Rows are state, not events: a later `apply-rows!` over it changes nothing twice."
   [gid g head last-id]
-  (when (empty? (graph-events gid))
-    (swap! seeds assoc gid {:kg g :head head :last-id last-id})
-    true))
+  (swap! seeds assoc gid {:kg g :head head :last-id last-id})
+  true)
 
 (defn- seed-new!
   "Backend mode: a graph made here, not yet on the server — empty, at head 0."
@@ -587,9 +581,9 @@
   ;; that realised it later would not subscribe to them).
   (if @remote?
     ;; backend mode: a graph whose seed has not come yet is left out and asked for
-    (let [cur @current head (kg) sd @seeds shelved @shelf]
+    (let [cur @current head (kg) sd @seeds]
       (keep (fn [g] (cond (= (:id g) cur) (assoc g :kg head)
-                          (get sd (:id g)) (assoc g :kg (first (fold-onto (:kg (get sd (:id g))) (get shelved (:id g) [])))) 
+                          (get sd (:id g)) (assoc g :kg (:kg (get sd (:id g))))
                           :else (do (some-> @fetch-seed (apply [(:id g)])) nil)))
             @graphs))
   (let [cur @current open-evs @events head (when (nil? @as-of) (kg)) shelved @shelf]
@@ -657,12 +651,18 @@
 (defonce ^:private redo-stack (atom {}))   ; graph id -> [ev-id of an undo …]
 (defonce ^:private replaying? (atom false))
 
+(declare remote-append!)
+
 (defn append!
   "Guard at the door, then append + persist. Returns nil on success,
-   the guard error otherwise (the UI shows it)."
+   the guard error otherwise (the UI shows it). Backend mode: a PROMISE of
+   that answer, the server's (`remote-append!`) — read it with `after!`."
   [e]
-  (if @as-of
-    (do (reset! last-error {:error :past-view}) @last-error)
+  (cond
+    @as-of (do (reset! last-error {:error :past-view}) @last-error)
+    @remote? (do (when-not (naming? e) (name-author!))
+                 (remote-append! @current e))
+    :else
   (do
   (when-not (naming? e) (name-author!))
   ;; the device's id is kept from its first change on
@@ -693,6 +693,70 @@
                 nil)
             (do (swap! events pop) @last-error))))))))
 
+;; --- backend mode, step 3: the server folds, this browser applies its rows ------
+;; An edit is checked for its shape, queued (`events` / `shelf`) and sent
+;; (sync); its promise answers once the server stored it and the rows it sent
+;; back are in the graph (`apply-rows!`) — or with the refusal.
+(defonce ^:private pending (atom {}))   ; ev-id → {:ok resolve :undo? :graph :ev}
+
+(defn- queue! [gid f]
+  (if (= gid @current) (swap! events f) (swap! shelf update gid (fnil f []))))
+
+(defn- remote-append!
+  [gid e]
+  (let [e (cond-> (merge {:ev/id (str (random-uuid)) :ev/ns gid :ev/actor (:id @author) :ev/ts (js/Date.now)} e)
+            (and (:ev/ts e) (not (:ev/recorded e))) (assoc :ev/recorded (js/Date.now)))
+        err (cond (nil? (get @seeds gid)) (do (some-> @fetch-seed (apply [gid])) {:error :not-loaded :detail gid})
+                  (not (schema/valid? e)) {:error :invalid-schema :detail (schema/explain e)})]
+    (when (nil? (read-ls author-key nil)) (write! author-key (pr-str @author)))
+    (if err
+      (do (reset! last-error err) err)
+      (p/create (fn [ok _]
+                  (swap! pending assoc (:ev/id e)
+                         {:ok ok :graph gid :ev e
+                          :undo? (and (not @replaying?) (fold/undoable? e) (not (naming? e)))})
+                  (queue! gid #(conj % e))
+                  (appended! gid e))))))
+
+(defn apply-rows!
+  "Backend mode: the rows the server sent (projection/delta-since) onto graph
+   `gid`'s seed — its graph without a fold here. `stored` = the ids of this
+   browser's edits they carry: those leave the queue, go on the undo stack
+   (with the graph just before them) and their promises answer nil."
+  [gid rows stored]
+  (when-let [{before :kg} (get @seeds gid)]
+    (let [after (fold/apply-delta before (graph-rows/rows->delta before rows))
+          mine (keep #(get @pending %) stored)]
+      (swap! seeds assoc gid {:kg after :head (:head rows) :last-id (:last-id rows)})
+      (queue! gid (fn [q] (vec (remove (comp (set stored) :ev/id) q))))
+      (when (seq mine)
+        (swap! befores (fn [m] {:graph gid
+                                :by (vec (take-last 50 (into (if (= (:graph m) gid) (:by m) []) (map (fn [x] [(:ev x) before]) mine))))})))
+      (doseq [{:keys [ev undo? ok]} mine]
+        (swap! pending dissoc (:ev/id ev))
+        (when undo?
+          (swap! undo-stack update gid (fnil conj []) (:ev/id ev))
+          (swap! redo-stack dissoc gid))
+        (ok nil))
+      (when (seq mine) (reset! last-error nil))
+      ;; an ontology graph's change flows into the graphs bound to it
+      (when (:ontology-graph? after) (sync-bound! gid)))))
+
+(defn refused!
+  "Backend mode: the server refused edit `id` of graph `gid` with `err`: it
+   leaves the queue and its promise answers the refusal."
+  [gid id err]
+  (queue! gid (fn [q] (vec (remove #(= id (:ev/id %)) q))))
+  (when-let [{:keys [ok]} (get @pending id)] (swap! pending dissoc id) (ok err)))
+
+(defn dropped!
+  "Backend mode: edits `ids` of graph `gid` were taken back (the server out
+   of reach): out of the queue, their promises answering `err`."
+  [gid ids err]
+  (let [gone (set ids)]
+    (queue! gid (fn [q] (vec (remove (comp gone :ev/id) q))))
+    (doseq [id ids] (when-let [{:keys [ok]} (get @pending id)] (swap! pending dissoc id) (ok err)))))
+
 (defn as-one!
   "Run `f`, one unit of work (a card: a topic with its material and
    questions): the events it appends are announced when it ends, so they go
@@ -721,17 +785,18 @@
   "Guard and append one event to ANY graph's log, open or shelved. nil on
    success, the guard error otherwise (or false when storage refused)."
   [gid e]
+  (if @remote?
+    (remote-append! gid e)
   (let [evs (graph-events gid)]
     ;; the open graph is already folded (`kg`, outside the past view): a
     ;; refold per write held a rename of a 40k graph seconds
-    (or (when (and @remote? (nil? (get @seeds gid))) (some-> @fetch-seed (apply [gid])) {:error :not-loaded :detail gid})
-        (fold/guard (if (and (= gid @current) (nil? @as-of)) (kg) (kg-of gid)) e)
+    (or (fold/guard (if (and (= gid @current) (nil? @as-of)) (kg) (kg-of gid)) e)
         (let [evs (conj evs e)
               err (if (= gid @current)
                     (do (reset! events evs) (when-not (persist!) (swap! events pop) false))
                     (when-not (shelve! gid evs) false))]
           (when (nil? err) (appended! gid e))
-          err))))
+          err)))))
 
 (defn rename-graph!
   "The registry row and the graph's own `:title` property (it travels with
@@ -825,9 +890,9 @@
         relink (relink-ops k (:relations plan))]
     (if-not e
       {:error :no-whole-ontology}
-      (let [err (append! {:ev/type :change :ops (vec (concat (:ops e) retype relink))})]
-        (when (nil? err) (swap! sync-refused dissoc @current))
-        err))))
+      (let [gid @current]
+        (after! (append! {:ev/type :change :ops (vec (concat (:ops e) retype relink))})
+                (fn [err] (when (nil? err) (swap! sync-refused dissoc gid)) err))))))
 
 (defn rename-relation!
   "In the open ontology graph: relation `old` gets the id written `text`
@@ -865,20 +930,21 @@
    ontology from a data graph's intake). nil on success, else the error."
   [oid ops]
   ;; a vector: callers build ops with concat, and the schema refuses a seq
-  (let [err (append-to-log! oid (stamp oid {:ev/type :change :ops (vec ops)}))]
-    (when (nil? err) (sync-bound! oid))
-    err))
+  (after! (append-to-log! oid (stamp oid {:ev/type :change :ops (vec ops)}))
+          ;; backend mode: the copy follows when the server's rows arrive (apply-rows!)
+          (fn [err] (when (and (nil? err) (not @remote?)) (sync-bound! oid)) err)))
 
 (defn make-types-graph!
   "The open graph becomes one that describes types (its ontology property
    set to the built-in types one) — the one door's «this is an ontology» for
    an empty graph. nil on success, else the guard error."
   []
-  (let [err (append! {:ev/type :change :ops [[:graph-set {:ontology fold/types-ontology}]]})]
+  (after! (append! {:ev/type :change :ops [[:graph-set {:ontology fold/types-ontology}]]})
+   (fn [err]
     (when (nil? err)
       (reset! graphs (mapv #(cond-> % (= @current (:id %)) (assoc :ontology fold/types-ontology)) @graphs))
       (persist-registry!))
-    err))
+    err)))
 
 (defn bind!
   "Give graph `gid` the ontology graph `oid`: its copy goes into gid's log
@@ -886,11 +952,12 @@
    else the guard error (an incomplete ontology: `:no-whole-ontology`)."
   [gid oid]
   (if-let [e (copy-event oid)]
-    (let [err (append-to-log! gid (assoc e :ev/ns gid))]
-      (when (nil? err)
-        (reset! graphs (mapv #(cond-> % (= gid (:id %)) (assoc :ontology oid)) @graphs))
-        (persist-registry!))
-      err)
+    (after! (append-to-log! gid (assoc e :ev/ns gid))
+            (fn [err]
+              (when (nil? err)
+                (reset! graphs (mapv #(cond-> % (= gid (:id %)) (assoc :ontology oid)) @graphs))
+                (persist-registry!))
+              err))
     {:error :no-whole-ontology}))
 
 (defn sync-bound!
@@ -915,8 +982,8 @@
                                   :when (and (not= n type) (now n) (not (now type)))]
                               [type n]))
               e (update e :ops (fn [ops] (vec (concat ops (relink-ops k plan)))))
-              err (append-to-log! id (assoc e :ev/ns id :ev/id (str (random-uuid))))]
-          (swap! sync-refused (if (and err (:error err)) #(assoc % id err) #(dissoc % id))))))))
+              r (append-to-log! id (assoc e :ev/ns id :ev/id (str (random-uuid))))]
+          (after! r (fn [err] (swap! sync-refused (if (and err (:error err)) #(assoc % id err) #(dissoc % id))))))))))
 
 (defn- vocabulary-ops
   "A vocabulary written as an ontology graph's nodes and edges — what an
@@ -959,9 +1026,8 @@
     (or (nil? ontology) (= "learning" ontology)) (new-graph! title)
     (= fold/types-ontology ontology) (new-ontology-graph! title)
     :else (when-let [gid (new-graph! title)]
-            (if-let [err (bind! gid ontology)]
-              (do (reset! last-error err) nil)
-              gid))))
+            (after! (bind! gid ontology)
+                    (fn [err] (if err (do (reset! last-error err) nil) gid))))))
 
 (defn- download! [text type fname]
   (let [a (js/document.createElement "a")]
@@ -975,21 +1041,27 @@
   [id]
   (cond (= id @current) (kg)
         (not @remote?) (fold/kg (graph-events id))
-        (get @seeds id) (first (fold-onto (:kg (get @seeds id)) (graph-events id)))
+        (get @seeds id) (:kg (get @seeds id))
         :else (do (some-> @fetch-seed (apply [id])) nil)))
 
 (defn kg-before
-  "Graph `gid` just before the `i`-th event of its log (backend mode: of its suffix)."
+  "Graph `gid` just before the `i`-th event of its log (local mode)."
   [gid i]
-  (let [evs (graph-events gid)]
-    (if @remote?
-      (first (fold-onto (or (:kg (get @seeds gid)) fold/empty-kg) (subvec evs 0 i)))
-      (fold/kg (subvec evs 0 i)))))
+  (fold/kg (subvec (graph-events gid) 0 i)))
 
 (defn- reverse-of!
   "Append the change that reverses the event `id` of the open graph; the id
    of that new change, or nil (nothing to reverse, or the guard said no)."
   [id]
+  (if @remote?
+    ;; backend mode: the edit and the graph just before it, from this session's
+    ;; stored edits (apply-rows!) — the reversal goes to the server like any edit
+    (when-let [[e g] (some (fn [[e g]] (when (= id (:ev/id e)) [e g])) (when (= (:graph @befores) @current) (:by @befores)))]
+      (when-let [ops (fold/undo-ops g e)]
+        (let [uid (str (random-uuid))]
+          (reset! replaying? true)
+          (after! (try (append! {:ev/id uid :ev/type :change :ops ops}) (finally (reset! replaying? false)))
+                  (fn [err] (when (nil? err) uid))))))
   (let [evs @events
         i (first (keep-indexed #(when (= id (:ev/id %2)) %1) evs))]
     (when i
@@ -999,7 +1071,7 @@
                                     (nth evs i))]
         (reset! replaying? true)
         (let [err (try (append! {:ev/type :change :ops ops}) (finally (reset! replaying? false)))]
-          (when (nil? err) (:ev/id (peek @events))))))))
+          (when (nil? err) (:ev/id (peek @events)))))))))
 
 (defn can-undo? [] (seq (get @undo-stack @current)))
 (defn can-redo? [] (seq (get @redo-stack @current)))
@@ -1008,19 +1080,27 @@
   "Reverse this session's last edit of the open graph. true when done."
   []
   (when-let [id (peek (get @undo-stack @current))]
-    (when-let [uid (reverse-of! id)]
-      (swap! undo-stack update @current pop)
-      (swap! redo-stack update @current (fnil conj []) uid)
-      true)))
+    (let [gid @current]
+      (after! (reverse-of! id)
+              (fn [uid]
+                (when uid
+                  ;; backend mode: the reversal's own confirmation put it on the
+                  ;; undo stack (it is an edit) — it belongs on redo instead
+                  (swap! undo-stack update gid (fn [st] (vec (remove #{id uid} st))))
+                  (swap! redo-stack update gid (fnil conj []) uid)
+                  true))))))
 
 (defn redo!
   "Reverse the last undo. true when done."
   []
   (when-let [uid (peek (get @redo-stack @current))]
-    (when-let [rid (reverse-of! uid)]
-      (swap! redo-stack update @current pop)
-      (swap! undo-stack update @current (fnil conj []) rid)
-      true)))
+    (let [gid @current]
+      (after! (reverse-of! uid)
+              (fn [rid]
+                (when rid
+                  (swap! redo-stack update gid pop)
+                  (swap! undo-stack update gid (fn [st] (conj (vec (remove #{rid} st)) rid)))
+                  true))))))
 
 (defn export-edn!
   "Download a graph's log as log.edn (the open one by default) — the author
@@ -1065,11 +1145,13 @@
   (if-let [err (:error (read-log text))]
     (do (reset! last-error err) nil)
     (when-let [id (new-graph! title)]
-      (when (import-edn! text)
-        (when-let [o (get-in (kg) [:graph :ontology])]
-          (reset! graphs (mapv #(cond-> % (= id (:id %)) (assoc :ontology o)) @graphs))
-          (persist-registry!))
-        id))))
+      (after! (import-edn! text)
+              (fn [ok]
+                (when ok
+                  (when-let [o (get-in (kg) [:graph :ontology])]
+                    (reset! graphs (mapv #(cond-> % (= id (:id %)) (assoc :ontology o)) @graphs))
+                    (persist-registry!))
+                  id))))))
 
 (defn delete-graph!
   "Remove a graph from this device: its log and its registry row. Refused
@@ -1140,8 +1222,11 @@
    (let [{evs :events err :error} (if append?
                                      (read-log text (kg) (set (map :ev/id @events)))
                                      (read-log text))]
-     (if err
-       (do (reset! last-error err) false)
+     (cond
+       err (do (reset! last-error err) false)
+       ;; backend mode: the events go to the server like edits; true once all are stored
+       @remote? (p/then (p/all (mapv #(remote-append! @current %) evs)) #(every? nil? %))
+       :else
        (let [before @events]
          (if append? (swap! events into evs) (reset! events evs))
          (or (persist!) (do (reset! events before) false)))))))

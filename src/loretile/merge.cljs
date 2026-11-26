@@ -171,13 +171,17 @@
                            kind #(first (what (store/kg) %))
                            _ (doseq [e (filter #(= :source (kind %)) evs)] (store/append! e))
                            ;; topics first, so a link between two new topics finds its ends
-                           proposals (concat (filter #(= :node (kind %)) evs)
-                                             (filter #(= :edge (kind %)) evs))
-                           dropped (set (keep #(when (store/append! %) (:ev/id %)) proposals))
-                           cards (cards-of (store/kg) key (remove #(dropped (:ev/id %)) evs))]
-                       (reset! store/last-error nil)
-                       (reset! chat/cards cards)
-                       (swap! chat/msgs conj
-                              {:who :sys :text (str (t :chat/merge-summary {"{name}" title "{n}" (count cards)})
-                                                    (when (seq dropped) (str " " (t :chat/dropped-prefix) (count dropped))))}))))))
+                           proposals (vec (concat (filter #(= :node (kind %)) evs)
+                                                  (filter #(= :edge (kind %)) evs)))]
+                       ;; each through the guard (the server's, in backend mode)
+                       (store/after-all!
+                        (map store/append! proposals)
+                        (fn [rs]
+                          (let [dropped (set (keep-indexed (fn [i e] (when (nth rs i) (:ev/id e))) proposals))
+                                cards (cards-of (store/kg) key (remove #(dropped (:ev/id %)) evs))]
+                            (reset! store/last-error nil)
+                            (reset! chat/cards cards)
+                            (swap! chat/msgs conj
+                                   {:who :sys :text (str (t :chat/merge-summary {"{name}" title "{n}" (count cards)})
+                                                         (when (seq dropped) (str " " (t :chat/dropped-prefix) (count dropped))))})))))))))
         (.catch #(reset! store/last-error {:error :merge-unavailable :detail (str (.-message %))})))))

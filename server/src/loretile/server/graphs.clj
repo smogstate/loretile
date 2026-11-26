@@ -235,12 +235,18 @@
            (assoc (:meta g) :seq (:seq g))))))
 
 (defn events-after
-  "{:seq :events} — every event stored after batch `after` (0: the whole graph)."
-  [gid after]
-  (let [st (store)
-        g (locking (lock-of gid) (loaded st gid))]
-    {:seq (:seq g)
-     :events (vec (mapcat second (filter #(> (first %) (or after 0)) (:batches g))))}))
+  "{:seq :events} — every event stored after batch `after` (0: the whole
+   graph); with `since` (an event count) also :rows, what changed in the
+   projection after it (`proj/delta-since`) — what a browser in backend mode
+   applies instead of folding."
+  ([gid after] (events-after gid after nil))
+  ([gid after since]
+   (let [st (store)]
+     (locking (lock-of gid)
+       (let [g (loaded st gid)]
+         (cond-> {:seq (:seq g)
+                  :events (vec (mapcat second (filter #(> (first %) (or after 0)) (:batches g))))}
+           since (assoc :rows (proj/delta-since (projected gid g) gid since))))))))
 
 (defn events-after-json
   "`events-after` as JSON: the events tagged like the browser's IndexedDB
@@ -255,7 +261,7 @@
    seq, how many were stored, every OTHER event after the client's batch
    `after` — what it has not seen — and the graph's event count. The first
    refused event stores nothing: {:error … :event id}."
-  [gid events after]
+  [gid events after & [since]]
   (let [st (store)]
     (locking (lock-of gid)
       (let [g (loaded st gid)
@@ -273,7 +279,9 @@
                       g)
                   sent (set (keep :ev/id events))]
               (swap! graphs assoc gid g)
-              {:seq (:seq g)
-               :stored (count fresh)
-               :events (vec (remove #(sent (:ev/id %)) (mapcat second (filter #(> (first %) (or after 0)) (:batches g)))))
-               :head (event-count g)}))))))
+              (cond-> {:seq (:seq g)
+                       :stored (count fresh)
+                       :events (vec (remove #(sent (:ev/id %)) (mapcat second (filter #(> (first %) (or after 0)) (:batches g)))))
+                       :head (event-count g)}
+                ;; the rows the client applies instead of folding (backend mode, step 3)
+                since (assoc :rows (proj/delta-since (projected gid g) gid since)))))))))

@@ -184,7 +184,7 @@
                                       (= fold/types-ontology o) (t :ui/ontology-types-builtin)
                                       :else (store/graph-title o))}))))
   :run (fn [_ {:keys [title ontology]}]
-         (opened! (store/create-graph! (str/trim (str title)) (ontology-choice ontology))))})
+         (store/after! (store/create-graph! (str/trim (str title)) (ontology-choice ontology)) opened!))})
 
 (tools/register!
  {:name "open-graph" :confirm :action

@@ -639,9 +639,11 @@
                               ;; the ring belongs to the graph it was armed in:
                               ;; after a switch it removed the same id from the
                               ;; graph open by then (review 2026-10-16 A7)
-                              (when (and (store/append-to? home) (nil? (store/append! ev)))
-                                (when (= (:id ev) @graph-sel) (reset! graph-sel nil))
-                                (snack! (t (or done :ui/removed)))))
+                              (when (store/append-to? home)
+                                (store/after! (store/append! ev)
+                                              #(when (nil? %)
+                                                 (when (= (:id ev) @graph-sel) (reset! graph-sel nil))
+                                                 (snack! (t (or done :ui/removed)))))))
                             del-ms))))))
 
 (defn- rm-btn
@@ -1143,12 +1145,14 @@
          {:on-click (fn [_]
                       ;; «added» only when it was: a refused id or a full
                       ;; storage keeps the form and what was typed in it
-                      (when (and (seq @title)
-                                 (nil? (store/append! (ops/accept-node (cond-> {:id (fresh-id @title "t" #{}) :title @title
-                                                                                :definition @definition}
-                                                                         @kind (assoc :kind @kind))))))
-                        (snack! (t :ui/topic-added {"{title}" @title}))
-                        (reset! show-new-concept false)))}
+                      (when (seq @title)
+                        (let [tt @title]
+                          (store/after! (store/append! (ops/accept-node (cond-> {:id (fresh-id tt "t" #{}) :title tt
+                                                                                 :definition @definition}
+                                                                          @kind (assoc :kind @kind))))
+                                        #(when (nil? %)
+                                           (snack! (t :ui/topic-added {"{title}" tt}))
+                                           (reset! show-new-concept false))))))}
          (t :ui/add)]
         [:button {:on-click #(reset! show-new-concept false)} (t :ui/cancel)]]])))
 
@@ -1156,8 +1160,8 @@
 ;; version-created event — never a re-accept (the guard refuses that)
 
 (defn- version! [entity id change payload]
-  (when (nil? (store/append! (ops/edit id payload change)))
-    (snack! (t :ui/saved))))
+  (store/after! (store/append! (ops/edit id payload change))
+                #(when (nil? %) (snack! (t :ui/saved)))))
 
 (defn- edit-btn [open]
   [:button.rbtn.sm.pt-edit {:title (t :ui/edit) :aria-label (t :ui/edit)
@@ -1402,11 +1406,11 @@
         {:on-click (fn [_]
                      (let [l (str/trim @label) id (keyword (slug l))]
                        (when (seq (name id))
-                         (when-not (store/append!
-                                    {:ev/type :change
-                                     :ops [[:edge-set from id to (cond-> {:label l}
-                                                                   (seq (str/trim @inverse)) (assoc :inverse (str/trim @inverse)))]]})
-                           (snack! (t :ui/link-added)))
+                         (store/after! (store/append!
+                                        {:ev/type :change
+                                         :ops [[:edge-set from id to (cond-> {:label l}
+                                                                       (seq (str/trim @inverse)) (assoc :inverse (str/trim @inverse)))]]})
+                                       #(when-not % (snack! (t :ui/link-added))))
                          (reset! link-draft nil))))}
         (t :ui/new-relation)]])))
 
@@ -1424,8 +1428,8 @@
           ^{:key edge-t}
           [:button.edge-btn
            {:on-click (fn [_]
-                        (when-not (store/append! (ops/accept-edge {:from from :to to :type edge-t :provenance :authored}))
-                          (snack! (t :ui/link-added)))
+                        (store/after! (store/append! (ops/accept-edge {:from from :to to :type edge-t :provenance :authored}))
+                                      #(when-not % (snack! (t :ui/link-added))))
                         (reset! link-draft nil))}
            (if (profile/learning? (fold/profile kg)) ((edge-labels) edge-t) (edge-label kg edge-t))])
         [:button {:on-click #(reset! link-draft nil)} (t :ui/cancel)]]])))
@@ -1471,8 +1475,8 @@
               [:select.lo-link-target {:value (or @target "") :on-change #(reset! target (.. % -target -value))}
                (for [x others] ^{:key (:id x)} [:option {:value (:id x)} (object-label x)])]
               [:button.primary {:on-click (fn [_]
-                                            (when (nil? (store/append! (ops/link-objects {:from (:id o) :to @target :type @typ})))
-                                              (reset! open false)))}
+                                            (store/after! (store/append! (ops/link-objects {:from (:id o) :to @target :type @typ}))
+                                                          #(when (nil? %) (reset! open false))))}
                (t :ui/link-save)]
               [:button {:on-click #(reset! open false)} (t :ui/cancel)]]))]))))
 
@@ -1654,8 +1658,8 @@
   [:button.chip-x {:title (t :ui/remove) :aria-label (t :ui/remove)
                    :on-click (fn [^js ev]
                                (.stopPropagation ev)
-                               (when (nil? (store/append! (ops/discard-edge e)))
-                                 (snack! (t :ui/removed))))}
+                               (store/after! (store/append! (ops/discard-edge e))
+                                             #(when (nil? %) (snack! (t :ui/removed)))))}
    [icons/icon :close]])
 
 (defn- removed-material
@@ -1671,8 +1675,8 @@
          [:div.lo.lo-removed
           [:span.lo-kind (i18n/enum-label "okind" (:kind o)) " · " (i18n/enum-label "level" (:level o))]
           [:p.muted (let [x (fold/plain-text (str (:text o)))] (if (> (count x) 160) (str (subs x 0 159) "…") x))]
-          [:button.restore {:on-click #(when (nil? (store/append! (ops/object-status (:id o) :active)))
-                                         (snack! (t :ui/restored)))}
+          [:button.restore {:on-click #(store/after! (store/append! (ops/object-status (:id o) :active))
+                                                     (fn [err] (when (nil? err) (snack! (t :ui/restored)))))}
            (t :ui/restore-material)]])])))
 
 (defn- answer-form
@@ -1690,13 +1694,15 @@
        [:button.primary.answer-save
         {:disabled (str/blank? @answer)
          :on-click (fn [_]
-                     (when (nil? (store/append! (ops/answer-question id (str/trim @answer))))
-                       (when @as-material
-                         (store/append! (ops/add-object {:id (str "o-" (random-uuid)) :concept-id concept-id
-                                                         :kind :explanation :level :apprentice
-                                                         :locale (store/locale-for-new) :origin :authored
-                                                         :text (str/trim @answer)})))
-                       (snack! (t :ui/answered))))}
+                     (let [text (str/trim @answer) material? @as-material]
+                       (store/after! (store/append! (ops/answer-question id text))
+                                     #(when (nil? %)
+                                        (when material?
+                                          (store/append! (ops/add-object {:id (str "o-" (random-uuid)) :concept-id concept-id
+                                                                          :kind :explanation :level :apprentice
+                                                                          :locale (store/locale-for-new) :origin :authored
+                                                                          :text text})))
+                                        (snack! (t :ui/answered))))))}
         (t :ui/answer-save)]])))
 
 (defn- expert-questions
@@ -1785,10 +1791,11 @@
                                                     :definition (str/trim (str (:definition r)))}
                                              (:kind c) (assoc :kind (:kind c)))))
                               remap (fn [xs] (into {} (for [x xs] [(:id x) (:id (nth parts (row-of (:id x))))])))]
-                          (when (nil? (store/append! (ops/split id parts (remap items) (remap objs))))
-                            (snack! (t :ui/split-done {"{n}" (count parts)}))
-                            (reset! done false)
-                            (goto! (str "#/c/" (js/encodeURIComponent (:id (first parts))))))))}
+                          (store/after! (store/append! (ops/split id parts (remap items) (remap objs)))
+                                        #(when (nil? %)
+                                           (snack! (t :ui/split-done {"{n}" (count parts)}))
+                                           (reset! done false)
+                                           (goto! (str "#/c/" (js/encodeURIComponent (:id (first parts)))))))))}
            (t :ui/split-save)]
           [:button {:on-click #(reset! done false)} (t :ui/cancel)]]]))))
 
@@ -2203,14 +2210,15 @@
                            ;; a NEW course never takes an existing id: course-published
                            ;; folds as an assoc, and «SQL: основы» replaced «SQL — основы»
                            ;; with everyone's runs and progress (review 2026-10-16 A6)
-                           (let [id (fresh-id @title "c" (set (keys (:courses kg))))]
-                             (when-not (store/append!
-                                        (ops/publish-course {:id id :title @title :targets targets
-                                                             :locale @locale :pass-threshold @threshold}))
-                               (snack! (t :ui/course-published {"{title}" @title}))
-                               (reset! picked {})
-                               (reset! chat/target-cards [])
-                               (goto! (str "#/course/" (js/encodeURIComponent id))))))}
+                           (let [id (fresh-id @title "c" (set (keys (:courses kg)))) tt @title]
+                             (store/after! (store/append!
+                                            (ops/publish-course {:id id :title tt :targets targets
+                                                                 :locale @locale :pass-threshold @threshold}))
+                                           #(when-not %
+                                              (snack! (t :ui/course-published {"{title}" tt}))
+                                              (reset! picked {})
+                                              (reset! chat/target-cards [])
+                                              (goto! (str "#/course/" (js/encodeURIComponent id)))))))}
               (t :ui/publish-course)]
              [:a.btn {:href "#/"} (t :ui/cancel)]]])]))))
 
@@ -2251,11 +2259,11 @@
                        (t :ui/republish-hint {"{n}" changed})
                        (t :ui/republish-blocked))
               :on-click (fn [_]
-                          (when (nil? (store/append!
-                                       (ops/publish-course (select-keys course [:id :title :targets :locale
-                                                                                :pass-threshold :diagnostic-items
-                                                                                :final-items :series]))))
-                            (snack! (t :ui/republished {"{n}" changed}))))}
+                          (store/after! (store/append!
+                                         (ops/publish-course (select-keys course [:id :title :targets :locale
+                                                                                  :pass-threshold :diagnostic-items
+                                                                                  :final-items :series])))
+                                        #(when (nil? %) (snack! (t :ui/republished {"{n}" changed})))))}
              [icons/icon :open-ext]
              (if (zero? changed) (t :ui/republish-none) (t :ui/republish {"{n}" changed}))])]
          [:p.muted (t :ui/course-meta {"{n}" (or (:pass-threshold course) "—")
@@ -2764,13 +2772,14 @@
        [:button.primary.cq-add
         {:disabled (str/blank? @q)
          :on-click (fn [_]
-                     (when (nil? (store/append!
-                                  (ops/raise-cq (cond-> {:id (str "cq-" (random-uuid)) :question (str/trim @q)}
-                                                  (seq @rel) (assoc :pattern (cond-> {:relation (keyword @rel)}
-                                                                               (seq @from) (assoc :from-type (keyword @from))
-                                                                               (= "in" @dir) (assoc :inverse? true)))))))
-                       (snack! (t :ui/cq-added))
-                       (reset! q "")))}
+                     (store/after! (store/append!
+                                    (ops/raise-cq (cond-> {:id (str "cq-" (random-uuid)) :question (str/trim @q)}
+                                                    (seq @rel) (assoc :pattern (cond-> {:relation (keyword @rel)}
+                                                                                 (seq @from) (assoc :from-type (keyword @from))
+                                                                                 (= "in" @dir) (assoc :inverse? true))))))
+                                   #(when (nil? %)
+                                      (snack! (t :ui/cq-added))
+                                      (reset! q ""))))}
         (t :ui/add-cq)]]))))
 
 (defn- cq-section
@@ -2850,9 +2859,9 @@
           [:button.primary.owner-save
            {:on-click (fn [_]
                         (let [tm (str/trim (or @team (:team o) "")) ct (str/trim (or @contact (:contact o) ""))]
-                          (when (and (seq tm)
-                                     (nil? (store/append! (ops/set-owner (cond-> {:team tm} (seq ct) (assoc :contact ct))))))
-                            (snack! (t :ui/owner-saved)))))}
+                          (when (seq tm)
+                            (store/after! (store/append! (ops/set-owner (cond-> {:team tm} (seq ct) (assoc :contact ct))))
+                                          #(when (nil? %) (snack! (t :ui/owner-saved)))))))}
            (t :ui/owner-save)]]]))))
 
 (def color-schemes ["default" "blueprint" "warm"])
@@ -2942,9 +2951,8 @@
             {:on-click (fn []
                          (let [p {:types (into {} (for [kind (:node-types breaks)] [kind (chosen-type kind)]))
                                   :relations (into {} (for [rel (:relations breaks)] [rel (chosen-rel rel)]))}]
-                           (if-let [err (store/migrate! p)]
-                             (reset! store/last-error err)
-                             (snack! (t :ui/migration-done)))))}
+                           (store/after! (store/migrate! p)
+                                         #(if % (reset! store/last-error %) (snack! (t :ui/migration-done))))))}
             (t :ui/migration-go)]])))))
 
 (defn- ontology-users-section
@@ -3085,8 +3093,8 @@
             :on-change (fn [ev]
                          (when-let [f (aget (.. ev -target -files) 0)]
                            (-> (.text f)
-                               (.then #(when (store/import-as-new-graph! (str/replace (.-name f) #"\.edn$" "") %)
-                                         (goto! "#/"))))))}]])
+                               (.then #(store/after! (store/import-as-new-graph! (str/replace (.-name f) #"\.edn$" "") %)
+                                                     (fn [id] (when id (goto! "#/"))))))))}]])
 
 (defn- server-graphs-section
   "Graphs the server keeps that this device does not have yet — opening one
@@ -3302,10 +3310,10 @@
       [icons/icon :chat]]]))
 
 (defn- undo-asked! []
-  (if (store/undo!) (snack! (t :ui/undone)) (snack! (t :ui/nothing-to-undo))))
+  (store/after! (store/undo!) #(if % (snack! (t :ui/undone)) (snack! (t :ui/nothing-to-undo)))))
 
 (defn- redo-asked! []
-  (if (store/redo!) (snack! (t :ui/redone)) (snack! (t :ui/nothing-to-redo))))
+  (store/after! (store/redo!) #(if % (snack! (t :ui/redone)) (snack! (t :ui/nothing-to-redo)))))
 
 (defn global-keys! []
   (js/window.addEventListener

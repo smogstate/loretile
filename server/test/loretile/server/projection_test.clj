@@ -9,6 +9,7 @@
             [clojure.test :refer [deftest is testing run-tests]]
             [loretile.fold :as fold]
             [loretile.graph-store :as gs]
+            [loretile.graph-rows :as rows]
             [loretile.server.projection :as proj])
   (:import (java.io File PushbackReader)))
 
@@ -98,6 +99,21 @@
           kg (fold/kg (fold/events-at evs cut))]
       (is (some? cut))
       (is (= (comparable kg) (comparable (gs/rows->kg (read-dump (proj/kg->dump-json kg {"cut" cut})))))))))
+
+;; backend mode, step 3: a browser holding the graph at event n applies the
+;; projection's rows since n (proj/delta-since → graph-rows/rows->delta →
+;; fold/apply-delta) instead of folding — and must end at the fold of the log
+(deftest rows-since-a-head-bring-a-graph-up-to-the-fold
+  (let [db (temp-db)]
+    (doseq [path logs
+            :let [evs (read-log path) g (str "rows:" path) whole (fold/kg evs)]]
+      (proj/rebuild! db g evs)
+      (doseq [n (distinct [0 (quot (count evs) 3) (quot (* 2 (count evs)) 3) (count evs)])
+              :let [at (fold/kg (subvec evs 0 n))
+                    r (proj/delta-since db g n)]]
+        (is (= (comparable whole) (comparable (fold/apply-delta at (rows/rows->delta at r))))
+            (str path " from event " n))
+        (is (= (count evs) (:head r)) path)))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'loretile.server.projection-test)]

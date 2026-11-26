@@ -123,18 +123,12 @@
         (swap! seeding assoc gid pr)
         pr)))
 
-(defn- held-count
-  "How many events of graph `gid`'s suffix `log` the server holds."
-  [gid log]
-  (min (count log) (max 0 (- (:confirmed (entry gid)) (store/seed-head gid)))))
-
 (defn- fetch-log!
   "Graph `gid`'s whole log: the server's, then this browser's unconfirmed events."
   [gid]
   (p/let [{evs :events} (api-get (str "/" (js/encodeURIComponent gid) "?after=0"))]
-    (let [log (store/graph-events gid)
-          have (set (map :ev/id evs))]
-      (into (vec evs) (remove #(have (:ev/id %)) (subvec log (held-count gid log)))))))
+    (let [have (set (map :ev/id evs))]
+      (into (vec evs) (remove #(have (:ev/id %)) (store/graph-events gid))))))
 
 ;; a graph folded from a FILTERED log, by the server (…/view): what a learner
 ;; pinned at a publication sees, the changes since — keyed by the graph's
@@ -184,6 +178,10 @@
 (set! (.-loretileBootedFrom js/window) (fn [] (some-> @booted name)))
 (when enabled?
   (set! (.-loretileLog js/window) (fn [id] (p/then (fetch-log! (or id @store/current)) pr-str)))
+  ;; an edit as the release build can be driven: EDN in, a promise of nil (stored, in
+  ;; the graph) or the refusal printed; and whether the open graph's seed is here
+  (set! (.-loretileAppend js/window) (fn [edn] (p/then (store/append! (reader/read-string edn)) #(some-> % pr-str))))
+  (set! (.-loretileLoading js/window) (fn [] (store/loading?)))
   (set! (.-loretileAppGraphIsServers js/window)
         (fn []
           (p/let [rows (fetch-text (str "/" (js/encodeURIComponent @store/current) "/rows"))]
@@ -193,58 +191,35 @@
 ;; --- one cycle: pull what others stored, push what is provisional ---------------
 
 (defn- lay-in!
-  "Others' events `remote` (after the server's seq this device knew): the
-   log becomes confirmed ++ remote ++ provisional. Returns how many came."
-  [gid remote new-seq]
-  (let [log (store/graph-events gid)
-        h (held-count gid log)
-        have (set (map :ev/id log))
-        remote (vec (remove #(have (:ev/id %)) remote))
-        held (subvec log 0 h)]
-    (when (seq remote)
-      (store/replace-log! gid (-> held (into remote) (into (subvec log h))))
-      ;; an ontology graph changed elsewhere: the graphs bound to it here take the new copy
-      (when (:ontology-graph? (store/kg-of gid)) (store/sync-bound! gid))
-      (when (= gid @store/current) (show-activity! (store/kg-before gid h) remote)))
-    (swap! sync-state assoc gid {:seq new-seq :confirmed (+ (store/seed-head gid) h (count remote))})
+  "A pull's answer: the rows others' events changed, onto the seed; their
+   events show as the pills. Returns how many came."
+  [gid {new-seq :seq remote :events rows :rows}]
+  (let [before (store/kg-of gid)]
+    (when rows (store/apply-rows! gid rows []))
+    (when (and (seq remote) (= gid @store/current)) (show-activity! before remote))
+    (swap! sync-state assoc gid {:seq new-seq :confirmed (store/seed-head gid)})
     (save!)
     (count remote)))
 
-(defn- take-back!
-  "Provisional events leave the log: `ids`, or every provisional one."
-  [gid ids]
-  (let [log (store/graph-events gid)
-        drop? (if ids (set ids) (set (map :ev/id (subvec log (held-count gid log)))))]
-    (when (some #(drop? (:ev/id %)) log)
-      (store/replace-log! gid (vec (remove #(drop? (:ev/id %)) log))))))
-
 (defn- push!
-  "Send the provisional tail; on success it is confirmed, with others'
-   events stored just before it laid in front. Resolves to how many went."
+  "Send the queue (this browser's edits not yet stored). The answer's rows —
+   these edits and whatever others stored before them — go onto the seed,
+   and the edits' promises answer (store/apply-rows!). How many went."
   [gid]
-  (let [log (store/graph-events gid)
-        ;; `known`, never `seq`: a local named seq shadowed clojure.core/seq and
-        ;; `(seq others)` below threw after EVERY stored push — the edits were
-        ;; taken back as «unreachable» until the next pull restored them
-        ;; (2026-11-24 → 2026-11-26)
-        {known :seq} (entry gid)
-        tail (subvec log (held-count gid log))]
+  (let [tail (store/graph-events gid)
+        {known :seq} (entry gid)]
     (if (empty? tail)
       0
-      (p/let [{pushed-seq :seq events :events} (api-post (str "/" (js/encodeURIComponent gid) "/events") {:events tail :after known})]
-        (let [log (store/graph-events gid)          ; edits made meanwhile stay provisional, after
-              sent (set (map :ev/id tail))
-              have (set (map :ev/id log))
-              others (vec (remove #(or (have (:ev/id %)) (sent (:ev/id %))) events))
-              held (subvec log 0 (held-count gid log))
-              mine (filterv #(sent (:ev/id %)) log)
-              later (filterv #(not (sent (:ev/id %))) (subvec log (count held)))]
-          (when (seq others)
-            (store/replace-log! gid (-> held (into others) (into mine) (into later)))
-            (when (= gid @store/current) (show-activity! (store/kg-before gid (count held)) others)))
-          (swap! sync-state assoc gid {:seq pushed-seq :confirmed (+ (store/seed-head gid) (count held) (count others) (count mine))})
+      (p/let [{pushed-seq :seq events :events rows :rows}
+              (api-post (str "/" (js/encodeURIComponent gid) "/events") {:events tail :after known :since (store/seed-head gid)})]
+        (let [sent (mapv :ev/id tail)
+              others (remove (comp (set sent) :ev/id) events)
+              before (store/kg-of gid)]
+          (store/apply-rows! gid rows sent)
+          (when (and (seq others) (= gid @store/current)) (show-activity! before others))
+          (swap! sync-state assoc gid {:seq pushed-seq :confirmed (store/seed-head gid)})
           (save!)
-          (count mine))))))
+          (count sent))))))
 
 (defn sync!
   "Pull, then push the provisional edits. Promise of {:pulled n :pushed n};
@@ -263,8 +238,9 @@
       (swap! status assoc gid :syncing)
       (-> (p/let [pulled (if push-only?
                            0
-                           (p/let [{server-seq :seq events :events} (api-get (str "/" (js/encodeURIComponent gid) "?after=" (:seq (entry gid))))]
-                             (lay-in! gid events server-seq)))
+                           (p/let [answer (api-get (str "/" (js/encodeURIComponent gid) "?after=" (:seq (entry gid))
+                                                        "&since=" (store/seed-head gid)))]
+                             (lay-in! gid answer)))
                   pushed (push! gid)]
             (swap! status assoc gid :ok)
             {:pulled pulled :pushed pushed})
@@ -273,17 +249,18 @@
                        (if (= 422 code)
                          ;; refused on the graph as it stands there: that edit goes, now;
                          ;; the rest of the batch was not judged — it goes again
-                         (do (take-back! gid [(:event body)])
-                             (reset! store/last-error {:error :server-refused :detail (:error body)})
+                         (let [err {:error :server-refused :detail (:error body)}]
+                             (store/refused! gid (:event body) err)
+                             (reset! store/last-error err)
                              (swap! again conj gid)
                              (swap! status assoc gid :ok))
                          ;; out of reach: nothing provisional may stay (no offline) —
                          ;; but a graph never synced keeps its log for the next cycle
-                         (let [log (store/graph-events gid)
-                               n (- (count log) (held-count gid log))]
+                         (let [q (store/graph-events gid)
+                               n (count q)]
                            (js/console.warn "loretile sync" gid (ex-message e))
                            (when (contains? @sync-state gid)
-                             (take-back! gid nil)
+                             (store/dropped! gid (map :ev/id q) {:error :server-unreachable :detail n})
                              (when (pos? n) (reset! store/last-error {:error :server-unreachable :detail n})))
                            (swap! status assoc gid :offline)))
                        nil)))

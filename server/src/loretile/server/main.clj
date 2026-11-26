@@ -9,7 +9,8 @@
      GET  /api/merges/?prefix=…   → the merge bucket listed as S3 XML
      GET  /api/merges/<key>       → one merge file
      GET  /api/graphs             → every server-kept graph (EDN)
-     GET  /api/graphs/<id>?after=n[&format=json] → {:seq :events} after batch n (0: all); json: tagged like IndexedDB
+     GET  /api/graphs/<id>?after=n[&since=k][&format=json] → {:seq :events} after batch n (0: all); json: tagged like IndexedDB;
+          since (an event count): + :rows, what the projection changed after it
      GET  /api/graphs/<id>/rows → every current row as one JSON string (the browser builds its graph from it)
      GET  /api/graphs/<id>/view?course=&pin= | ?valid=&recorded= → the graph folded from a filtered log
           (a pinned learner's, the past view) in /rows' shape, + cut, newest, changes
@@ -215,14 +216,15 @@
       (str/blank? gid) (if (= "GET" method) (send-edn! ex 200 (graphs/list-graphs)) (send-text! ex 405 "Method not allowed"))
       (not (graphs/valid-id? gid)) (send-text! ex 400 "bad graph id")
       (and (nil? tail) (= "GET" method))
-      (let [after (some-> (query-param ex "after") parse-long)]
+      (let [after (some-> (query-param ex "after") parse-long)
+            since (some-> (query-param ex "since") parse-long)]
         (if (= "json" (query-param ex "format"))
           (send-json! ex 200 (graphs/events-after-json gid after))
-          (send-edn! ex 200 (graphs/events-after gid after))))
+          (send-edn! ex 200 (graphs/events-after gid after since))))
       (and (= "events" tail) (= "POST" method))
       (let [body (edn/read-string (String. (.readAllBytes (.getRequestBody ex)) StandardCharsets/UTF_8))]
         (if (and (map? body) (sequential? (:events body)))
-          (let [r (graphs/append! gid (vec (:events body)) (:after body))]
+          (let [r (graphs/append! gid (vec (:events body)) (:after body) (:since body))]
             ;; stored: the new texts are embedded now, not at the next poll
             (when (pos? (or (:stored r) 0)) (embedder/nudge!))
             (send-edn! ex (if (:error r) 422 200) r))

@@ -662,18 +662,23 @@
               new-rel? #(and oid (store/graph-on-device? oid) (seq (str (:type %)))
                              (nil? (profile/relation p (keyword (:type %)))))
               {waiting true fits false} (group-by (comp boolean new-rel?) (apply concat found))
-              ok-e (filterv #(nil? (store/append!
-                                    (ops/propose-edge {:from (:from %) :to (:to %)
-                                                       :type (keyword (or (:type %) (default-relation)))
-                                                       :provenance :llm-drafted
-                                                       :justification (:why %)})))
-                            fits)]
-          (reset! store/last-error nil)
-          (swap! cards into (for [e ok-e] {:card :edge :data e}))
-          (when (seq waiting)
-            (add-relation-drafts! oid kg waiting)
-            (swap! cards into (for [e waiting] {:card :edge :data e :waits-relation (str (:type e))})))
-          (count ok-e)))))))
+              fits (vec fits)]
+          ;; each proposal goes through the guard (the server's, in backend mode):
+          ;; only those it let in become cards
+          (store/after-all!
+           (map #(store/append! (ops/propose-edge {:from (:from %) :to (:to %)
+                                                   :type (keyword (or (:type %) (default-relation)))
+                                                   :provenance :llm-drafted
+                                                   :justification (:why %)}))
+                fits)
+           (fn [rs]
+             (let [ok-e (vec (keep-indexed (fn [i e] (when (nil? (nth rs i)) e)) fits))]
+               (reset! store/last-error nil)
+               (swap! cards into (for [e ok-e] {:card :edge :data e}))
+               (when (seq waiting)
+                 (add-relation-drafts! oid kg waiting)
+                 (swap! cards into (for [e waiting] {:card :edge :data e :waits-relation (str (:type e))})))
+               (count ok-e))))))))))
 
 ;; --- search over the concept index --------------------------------------------
 ;; the model never loads the whole tree (wiki/Architecture.md): a small
@@ -943,11 +948,16 @@
    search — so their links are found too (2026-11-20)."
   [{:keys [data] :as c}]
   (let [home @store/current]
-    (if-let [err (store/add-to-ontology! (:graph data) [[:node-set (:id data) {:title (:title data)}]])]
+    (store/after!
+     (store/add-to-ontology! (:graph data) [[:node-set (:id data) {:title (:title data)}]])
+     (fn [err]
+    (if err
       (reset! store/last-error err)
-      (let [ws (filter #(= (:id data) (:waits-type %)) @cards)
-            ok (filterv #(nil? (store/append! (ops/propose-node (concept-payload (:data %)) :llm-drafted)))
-                        ws)
+      (let [ws (vec (filter #(= (:id data) (:waits-type %)) @cards))]
+       (store/after-all!
+        (map #(store/append! (ops/propose-node (concept-payload (:data %)) :llm-drafted)) ws)
+        (fn [rs]
+      (let [ok (vec (keep-indexed (fn [i w] (when (nil? (nth rs i)) w)) ws))
             ok? (set ok)]
         (reset! store/last-error nil)
         (resolve-card! c)
@@ -960,7 +970,7 @@
                                       (into {} (for [[id pr] (:proposals (store/kg)) :when (= :concept (:of pr))] [id pr])))
                               (mapv (comp concept-payload :data) ok) home)
               (p/catch (fn [e] (swap! msgs conj {:who :sys :text (str (t :chat/error-prefix) (ex-message e))})))
-              (p/finally #(reset! busy false))))))))
+              (p/finally #(reset! busy false)))))))))))))
 
 (defn- add-relation-drafts!
   "One card per relation the ontology lacks: its words and the type pairs
@@ -988,9 +998,8 @@
         ops (vec (for [[a b] (:pairs data)] [:edge-set a (keyword (:id data)) b props]))]
     (if (empty? ops)
       (resolve-card! c)
-      (if-let [err (store/add-to-ontology! (:graph data) ops)]
-        (reset! store/last-error err)
-        (resolve-card! c)))))
+      (store/after! (store/add-to-ontology! (:graph data) ops)
+                    #(if % (reset! store/last-error %) (resolve-card! c))))))
 
 (defn- intake-part!
   "One part of the material → topic cards, then link cards judged over
@@ -1025,9 +1034,13 @@
             ;; dashed ghosts; the guard drops duplicates and re-proposals of
             ;; discarded things, and their cards with them. Concepts from a
             ;; document carry its source id into the accept (→ grounded-in)
-            ok-c (filterv #(nil? (store/append! (ops/propose-node (concept-payload %) :llm-drafted)))
-                          (map #(cond-> % src (assoc :source-id src)) fits))
+            fits (vec (map #(cond-> % src (assoc :source-id src)) fits))
             waiting (map #(cond-> % src (assoc :source-id src)) waiting)]
+       ;; each proposal goes through the guard (the server's, in backend mode)
+       (store/after-all!
+        (map #(store/append! (ops/propose-node (concept-payload %) :llm-drafted)) fits)
+        (fn [rs]
+       (let [ok-c (vec (keep-indexed (fn [i c] (when (nil? (nth rs i)) c)) fits))]
         (when (seq waiting) (add-type-drafts! oid waiting))
         ;; drops are expected here and reported in-chat — not in the banner
         (reset! store/last-error nil)
@@ -1063,7 +1076,7 @@
                                   batch home)]
           {:concepts batch
            :dropped (- (count (:concepts ops)) (count ok-c) (count waiting))
-           :note (:note ops)})))))
+           :note (:note ops)}))))))))
 
 (defn- part-label [{:keys [i n from to]}]
   (if from
@@ -1261,7 +1274,7 @@
     (resolve-card! c)
     (cond
       (= :ontology what)
-      (when (nil? (store/make-types-graph!)) (ontology-intake! home doc nil))
+      (store/after! (store/make-types-graph!) #(when (nil? %) (ontology-intake! home doc nil)))
       ;; derive: an ontology graph is made and the document read there for its
       ;; types and relations; a pinned card then reads it as THIS graph's content
       (= "derive" ontology)
@@ -1270,9 +1283,8 @@
         (swap! cards conj {:card :derive-next
                            :data {:id (str "derive-" oid) :doc doc :graph home :ontology oid}}))
       (= "learning" ontology) (content-intake! home doc nil)
-      :else (if-let [err (store/bind! home ontology)]
-              (reset! store/last-error err)
-              (content-intake! home doc nil)))))
+      :else (store/after! (store/bind! home ontology)
+                          #(if % (reset! store/last-error %) (content-intake! home doc nil))))))
 
 (defn- content-intake!
   "A document (or typed text) read into the open data graph as topic and
@@ -1543,11 +1555,12 @@
   (if (foreign?)
     (refuse-foreign!)
     (let [{:keys [source concept]} (:data c)]
-      (when-not (store/append! (ops/update-source source change [concept]))
-        (resolve-card! c)
-        ;; stale is not a dead end: say what clears it
-        (when (= :material change)
-          (swap! msgs conj {:who :sys :text (t :chat/reversion-next {"{title}" (get-in (store/kg) [:concepts concept :title] concept)})}))))))
+      (store/after! (store/append! (ops/update-source source change [concept]))
+                    #(when-not %
+                       (resolve-card! c)
+                       ;; stale is not a dead end: say what clears it
+                       (when (= :material change)
+                         (swap! msgs conj {:who :sys :text (t :chat/reversion-next {"{title}" (get-in (store/kg) [:concepts concept :title] concept)})})))))))
 
 (defn kept-answer!
   "The topics whose quoted passage is still in the new version: all marked
@@ -1559,8 +1572,8 @@
       (if split?
         (do (drop-card! c)
             (swap! cards into (for [cid concepts] {:card :reversion :data {:id (str "r-" source "-" cid) :source source :new new :concept cid}})))
-        (when-not (store/append! (ops/update-source source :patch concepts))
-          (resolve-card! c))))))
+        (store/after! (store/append! (ops/update-source source :patch concepts))
+                      #(when-not % (resolve-card! c)))))))
 
 (defn pick-version! [c old]
   (swap! cards (fn [cs] (mapv #(if (= % c) (assoc-in % [:data :pick] old) %) cs))))
@@ -1695,11 +1708,12 @@
     (cond
       (foreign?) (refuse-foreign!)
       (seq ready)
-      (when-not (store/append! (ops/publish-course {:id id :title (if (seq goal) goal (t :chat/build-default-title))
-                                                    :targets (mapv (fn [cid] [cid (topic-level kg cid locale)]) ready)
-                                                    :locale locale :pass-threshold 80}))
-        (resolve-card! c)
-        (set! js/location.hash (str "#/learn/" id))))))
+      (store/after! (store/append! (ops/publish-course {:id id :title (if (seq goal) goal (t :chat/build-default-title))
+                                                        :targets (mapv (fn [cid] [cid (topic-level kg cid locale)]) ready)
+                                                        :locale locale :pass-threshold 80}))
+                    #(when-not %
+                       (resolve-card! c)
+                       (set! js/location.hash (str "#/learn/" id)))))))
 
 (defn toggle-draft!
   "Tick/untick a draft or question riding on a topic card."
@@ -1750,7 +1764,8 @@
                                       (false? (:stated data)) (assoc :inferred? true)))))
           :object (store/append! (or (:ev c) (object-event data)))
           :question (store/append! (or (:ev c) (question-event data)))
-          :item (or (store/append! (:ev c)) (store/append! (ops/item-status (:id data) :active)))
+          ;; the merge file's item, then made active (a refusal stops at the first)
+          :item (store/after! (store/append! (:ev c)) #(or % (store/append! (ops/item-status (:id data) :active))))
           :change (store/append! (:ev c))
           (:type :relation) (store/append! (vocab-event c (store/kg)))
           ;; a drafted exercise: the runtime judged it, the author accepts it
@@ -1759,18 +1774,21 @@
                                                     :level :apprentice :kind :exercise :locale (store/locale-for-new)
                                                     :origin (if (store/personal?) :generated :drafted) :spec (:spec data)}
                                                    :active))))]
-    (if err
-      ;; the guard said no (a loop, a misfit…): the banner says why, and the
-      ;; card stops offering an accept that can only be refused again —
-      ;; discard stays (business dogfood 2026-10-15: a reversed `triggers`
-      ;; link sat at the top of the pile, clickable, for ever)
-      (swap! cards (fn [cs] (mapv #(if (= % c) (assoc % :refused true) %) cs)))
-      (do
-        ;; the topic's ticked drafts and questions go in with it
-        (when (= :concept card)
-          (doseq [o (:objects c) :when (:on? o)] (store/append! (or (:ev o) (object-event o))))
-          (doseq [q (:questions c) :when (:on? q)] (store/append! (or (:ev q) (question-event q)))))
-        (resolve-card! c)))))
+    ;; the topic's ticked drafts and questions go in with it — backend mode: in
+    ;; the same batch, judged by the server after the topic; here only once the
+    ;; topic is in
+    (when (and (= :concept card) (or @store/remote? (nil? err)))
+      (doseq [o (:objects c) :when (:on? o)] (store/append! (or (:ev o) (object-event o))))
+      (doseq [q (:questions c) :when (:on? q)] (store/append! (or (:ev q) (question-event q)))))
+    (store/after! err
+                  (fn [err]
+                    (if err
+                      ;; the guard said no (a loop, a misfit…): the banner says why, and the
+                      ;; card stops offering an accept that can only be refused again —
+                      ;; discard stays (business dogfood 2026-10-15: a reversed `triggers`
+                      ;; link sat at the top of the pile, clickable, for ever)
+                      (swap! cards (fn [cs] (mapv #(if (= % c) (assoc % :refused true) %) cs)))
+                      (resolve-card! c))))))
 
 (defn accept-all!
   "Accept these cards one by one, each through the guard (a refusal stays
@@ -2023,7 +2041,8 @@
                                                      inverse? (assoc :inverse? true))}))))
         (swap! cards (fn [cs] (vec (remove #(#{:profile-next :cq} (:card %)) cs))))
         (store/switch-graph! home)
-        (if-let [err (store/bind! home oid)]
+        (store/after! (store/bind! home oid) (fn [err]
+        (if err
           (do (reset! store/last-error err) (reset! onto nil))
           (let [answers (str/join "\n\n" (for [m @msgs :when (= :user (:who m))] (:text m)))]
             (swap! msgs conj {:who :sys :text (t :chat/onto-done {"{title}" (store/graph-title oid)
@@ -2032,7 +2051,7 @@
             (reset! onto nil)
             ;; the answers named real things (people, systems, steps): read them as content
             (when (seq answers)
-              (content-intake! home {:name (t :chat/interview-answers) :text answers} nil))))))))
+              (content-intake! home {:name (t :chat/interview-answers) :text answers} nil))))))))))
 
 (defn- rel-label
   "A relation named on a card: the dictionary's word in learning, the
@@ -2126,28 +2145,33 @@
                       ;; builds its payload from the card, and the raw model map
                       ;; was refused untyped or accepted ungrounded (review
                       ;; 2026-10-16 A21)
-                      ok-c (filterv #(nil? (store/append! (ops/propose-node (concept-payload %) :llm-drafted)))
-                                    (for [c (:concepts ops) :when (seq (:id c))]
-                                      (cond-> (assoc c :type (name want-type))
-                                        (and src text) (assoc :source-id src))))
+                      nodes (vec (for [c (:concepts ops) :when (seq (:id c))]
+                                   (cond-> (assoc c :type (name want-type))
+                                     (and src text) (assoc :source-id src))))
                       ;; the edge always has the node at the end the question fixes
-                      edges (for [e (:edges ops)
-                                  :let [other (if (:inverse? pattern) (:from e) (:to e))]
-                                  :when (and (seq other) (not= other node-id))]
-                              (cond-> (if (:inverse? pattern)
-                                        {:from other :to node-id :type (name (:id r)) :why (:why e)}
-                                        {:from node-id :to other :type (name (:id r)) :why (:why e)})
-                                (false? (:stated e)) (assoc :stated false)))
-                      ok-e (filterv #(nil? (store/append!
-                                            (ops/propose-edge (cond-> {:from (:from %) :to (:to %) :type (:id r)
-                                                                       :provenance :llm-drafted :justification (:why %)}
-                                                                (false? (:stated %)) (assoc :inferred? true)))))
-                                    edges)]
-                  (reset! store/last-error nil)
-                  (swap! msgs conj {:who :llm :text (or (:note ops) (if (or (seq ok-c) (seq ok-e)) (t :chat/gap-found) (t :chat/gap-nothing)))})
-                  (when (empty? @cards) (reset! decided 0))
-                  (swap! cards into (concat (ops->cards {:concepts ok-c})
-                                            (for [e ok-e] {:card :edge :data e}))))))
+                      edges (vec (for [e (:edges ops)
+                                       :let [other (if (:inverse? pattern) (:from e) (:to e))]
+                                       :when (and (seq other) (not= other node-id))]
+                                   (cond-> (if (:inverse? pattern)
+                                             {:from other :to node-id :type (name (:id r)) :why (:why e)}
+                                             {:from node-id :to other :type (name (:id r)) :why (:why e)})
+                                     (false? (:stated e)) (assoc :stated false))))]
+                  ;; nodes first, then the edges — each through the guard (the
+                  ;; server's, in backend mode); only what it let in becomes a card
+                  (store/after-all!
+                   (concat (map #(store/append! (ops/propose-node (concept-payload %) :llm-drafted)) nodes)
+                           (map #(store/append! (ops/propose-edge (cond-> {:from (:from %) :to (:to %) :type (:id r)
+                                                                           :provenance :llm-drafted :justification (:why %)}
+                                                                    (false? (:stated %)) (assoc :inferred? true))))
+                                edges))
+                   (fn [rs]
+                     (let [ok-c (vec (keep-indexed (fn [i c] (when (nil? (nth rs i)) c)) nodes))
+                           ok-e (vec (keep-indexed (fn [i e] (when (nil? (nth rs (+ (count nodes) i))) e)) edges))]
+                       (reset! store/last-error nil)
+                       (swap! msgs conj {:who :llm :text (or (:note ops) (if (or (seq ok-c) (seq ok-e)) (t :chat/gap-found) (t :chat/gap-nothing)))})
+                       (when (empty? @cards) (reset! decided 0))
+                       (swap! cards into (concat (ops->cards {:concepts ok-c})
+                                                 (for [e ok-e] {:card :edge :data e})))))))))
             (p/catch (fn [e] (swap! msgs conj {:who :sys :text (str (t :chat/error-prefix) (ex-message e))})))
             (p/finally #(reset! busy false))))))))
 
@@ -2275,11 +2299,11 @@
         rel (when-not err (profile/relation (store/profile) (:id relation)))]
     (when rel
       (let [inverse? (boolean (and asks-from (contains? (:to rel) asks-from) (not (contains? (:from rel) asks-from))))]
-        (when (nil? (store/append! (ops/raise-cq {:id (str "cq-" (random-uuid)) :question question
-                                                  :pattern (cond-> {:relation (:id rel)}
-                                                             asks-from (assoc :from-type asks-from)
-                                                             inverse? (assoc :inverse? true))})))
-          (resolve-card! c))))))
+        (store/after! (store/append! (ops/raise-cq {:id (str "cq-" (random-uuid)) :question question
+                                                    :pattern (cond-> {:relation (:id rel)}
+                                                               asks-from (assoc :from-type asks-from)
+                                                               inverse? (assoc :inverse? true))}))
+                      #(when (nil? %) (resolve-card! c)))))))
 
 (defmulti card-view :card)
 
@@ -2334,9 +2358,8 @@
   (let [{:keys [doc graph ontology]} data]
     (resolve-card! c)
     (when (and (or (= graph @store/current) (store/switch-graph! graph)) (new-conversation!))
-      (if-let [err (store/bind! graph ontology)]
-        (reset! store/last-error err)
-        (content-intake! graph doc nil)))))
+      (store/after! (store/bind! graph ontology)
+                    #(if % (reset! store/last-error %) (content-intake! graph doc nil))))))
 
 (defmethod card-view :derive-next [{:keys [data] :as c}]
   (let [open (count (filter #(#{:type :relation} (:card %)) @cards))

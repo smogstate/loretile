@@ -60,7 +60,13 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
       return srv + '\n' + await p.evaluate((x) => cljs.core.pr_str(loretile.store.graph_events(x)), gid);
     };
     // the guard's refusal, printed — or null when the event was stored
-    const append = (p, edn) => p.evaluate((s) => { const r = loretile.store.append_BANG_(cljs.reader.read_string(s)); return r ? cljs.core.pr_str(r) : null; }, edn);
+    // backend mode (wiki/Graph-Store.md § Backend mode, step 3): an edit's answer is
+    // the server's — append waits for it (nil = stored and in the graph);
+    // appendNoWait sends and does not wait (the server out of reach on purpose)
+    const append = (p, edn) => p.evaluate(async (s) => {
+      const r = await Promise.race([loretile.store.append_BANG_(cljs.reader.read_string(s)), new Promise((ok) => setTimeout(() => ok('TIMEOUT'), 8000))]);
+      return r ? (r === 'TIMEOUT' ? r : cljs.core.pr_str(r)) : null; }, edn);
+    const appendNoWait = (p, edn) => p.evaluate((s) => { loretile.store.append_BANG_(cljs.reader.read_string(s)); }, edn);
     // one whole sync cycle of the open graph, waited for (retried while one is already running)
     const syncNow = async (p) => {
       for (let i = 0; i < 30; i++) {
@@ -163,8 +169,10 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await append(A, `{:ev/type :change :ops [[:node-remove "${nid}"]]}`);
     await syncNow(A);
     await B.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(300);
-    const localOk = await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:priority "высокий"}]]}`);
-    check(!localOk, 'B\'s graph still has the node, so B\'s own guard lets the edit through');
+    // no guard here in backend mode: the edit goes to the server, whose guard
+    // judges it on the graph as it stands there — and its answer is the refusal
+    const answer = await append(B, `{:ev/type :change :ops [[:node-set "${nid}" {:priority "высокий"}]]}`);
+    check(/server-refused/.test(answer || ''), 'B does not judge it here: the edit goes to the server, and the answer is its refusal (' + answer + ')');
     await syncNow(B); await sleep(300);
     check(/Сервер не принял/.test(await B.$eval('div.error', (e) => e.textContent).catch(() => '')), 'the server refuses it, and B\'s banner says so');
     check(!/:priority "высокий"/.test(await log(B)) && !/:priority "высокий"/.test(await onServer(gid)), 'the refused edit is gone from B, and never reached the server');
@@ -173,7 +181,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     // the server out of reach: no offline — the edit goes back
     await B.evaluate(() => { window.__fetch = window.fetch;
       window.fetch = (u, o) => String(u).includes('api/graphs') ? Promise.reject(new TypeError('offline')) : window.__fetch(u, o); });
-    await append(B, `{:ev/type :change :ops [[:node-set "n-2" {:note "без сети"}]]}`);
+    await appendNoWait(B, `{:ev/type :change :ops [[:node-set "n-2" {:note "без сети"}]]}`);
     await sleep(800);
     check(/Сервер недоступен/.test(await B.$eval('div.error', (e) => e.textContent).catch(() => '')), 'out of reach: the banner says the edit was not saved');
     check(!/без сети/.test(await log(B)), 'and the edit is taken back');
@@ -182,7 +190,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     // an edit the server never confirmed does not survive a reload
     await B.evaluate(() => { window.__fetch = window.fetch;
       window.fetch = (u, o) => (o && o.method === 'POST' && String(u).includes('api/graphs')) ? new Promise(() => {}) : window.__fetch(u, o); });
-    await append(B, `{:ev/type :change :ops [[:node-set "n-2" {:note "не подтверждено"}]]}`);
+    await appendNoWait(B, `{:ev/type :change :ops [[:node-set "n-2" {:note "не подтверждено"}]]}`);
     await sleep(300);
     check(/не подтверждено/.test(await log(B)), 'an edit waiting for the server shows at once');
     await B.reload({ waitUntil: 'networkidle0' }); await sleep(800);
@@ -193,7 +201,7 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await B.evaluate(() => { window.__fetch = window.fetch;
       window.fetch = (u, o) => String(u).includes('api/graphs') ? Promise.reject(new TypeError('offline')) : window.__fetch(u, o); });
     const local = await B.evaluate(() => loretile.store.new_graph_BANG_('Местный граф'));
-    await append(B, `{:ev/type :change :ops [[:node-set "loc-1" {:title "Своё"}]]}`);
+    await appendNoWait(B, `{:ev/type :change :ops [[:node-set "loc-1" {:title "Своё"}]]}`);
     await sleep(800);
     check(/Своё/.test(await log(B)), 'a never-synced graph keeps its log when its first push cannot reach the server');
     await B.evaluate(() => { window.fetch = window.__fetch; cljs.core.reset_BANG_(loretile.store.last_error, null); });
@@ -210,10 +218,10 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
       return oid;
     });
     await syncNow(A);
-    const dgid = await A.evaluate((oid) => {
+    const dgid = await A.evaluate(async (oid) => {
       const S = loretile.store;
       const gid = S.new_graph_BANG_('Данные по онтологии');
-      const bad = S.bind_BANG_(gid, oid);
+      const bad = await S.bind_BANG_(gid, oid);   // the server's answer, in backend mode
       return bad ? null : gid;
     }, made);
     await syncNow(A);
@@ -273,6 +281,19 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await B.waitForSelector('.learn h2', { timeout: 8000 }).catch(() => {});
     const intro = await B.$eval('.learn', (e) => e.textContent).catch(() => '');
     check(/Курс синхронизации/.test(intro) && /Тема курса/.test(intro), 'a learner opens the course: the server folds its publication, the intro names its target');
+    // step 3: the browser does not fold — no fold/delta, no guard here; the edit
+    // comes into B's graph as the rows the server sent back
+    const folds = await B.evaluate(async (n) => {
+      const F = loretile.fold, d = F.delta, g = F.guard; let calls = 0;
+      F.delta = function () { calls++; return d.apply(this, arguments); };
+      F.guard = function () { calls++; return g.apply(this, arguments); };
+      const r = await loretile.store.append_BANG_(cljs.reader.read_string(`{:ev/type :change :ops [[:node-set "${n}" {:checked "да"}]]}`));
+      F.delta = d; F.guard = g;
+      const c = cljs.core.get_in(loretile.store.kg(), cljs.core.vector(cljs.core.keyword('concepts'), n));
+      return { r: r === null, calls, checked: cljs.core.get(c, cljs.core.keyword('checked')) };
+    }, "c-topic");
+    check(folds.r && folds.calls === 0 && folds.checked === 'да', `an edit reaches B's graph with no fold here: the server's rows (${JSON.stringify(folds)})`);
+
   } finally {
     await browser.close();
     server.kill();

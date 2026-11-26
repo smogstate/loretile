@@ -53,6 +53,18 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
     await page.waitForFunction(() => document.querySelectorAll('svg.graph .node').length > 0, { timeout: 600000, polling: 250 });
     const boot = Date.now() - t;
     check(boot < 25000, `a later boot → the map: ${boot} ms`);
+    // an edit at 40k: no fold in the browser — the server judges, folds, stores
+    // and sends back the rows; timed until the edit is in the browser's graph
+    await page.waitForFunction(() => !window.loretileLoading(), { timeout: 60000, polling: 250 });
+    const edits = [];
+    for (let i = 0; i < 3; i++) {
+      edits.push(await page.evaluate(async (i) => {
+        const t0 = performance.now();
+        const r = await window.loretileAppend(`{:ev/type :change :ops [[:node-set "t${i * 1000 + 7}" {:checked "${i}"}]]}`);
+        return r == null ? Math.round(performance.now() - t0) : 'refused ' + r;
+      }, i));
+    }
+    check(edits.every((ms) => typeof ms === 'number' && ms < 3000), `an edit, sent → stored by the server → in the browser's graph: ${edits.join(', ')} ms`);
     const heap = await page.evaluate(() => { if (window.gc) gc(); return Math.round(performance.memory.usedJSHeapSize / 1e6); });
     console.log('heap MB', heap);
   } catch (e) { console.log('CHECK CRASHED', e.message); failures++; }

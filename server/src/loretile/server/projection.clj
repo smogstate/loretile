@@ -357,6 +357,27 @@
      :edges (rows db "SELECT \"from\", type, \"to\", status, to_seq FROM edges WHERE graph=? AND (from_seq > ? OR to_seq > ?)" graph s s)
      :head (some-> (head db graph) (#(-> % (assoc :lastId (:last-id %)) (dissoc :last-id))))}))
 
+(defn delta-since
+  "What changed in `graph`'s current rows after event `s`, data inline as the
+   stored JSON — the rows a browser applies instead of folding (wiki/Graph-Store.md
+   § Backend mode, step 3; `graph-rows/rows->delta`): rows opened since and
+   still current; ids whose rows closed with none current (removed); edges
+   likewise by [from type to status]; keys discarded since; the heads; where
+   the graph stands now."
+  [db graph s]
+  (locked db
+    (let [[n last-id] (first (rows db "SELECT seq, last_id FROM heads WHERE graph=?" graph))]
+      {:head (or n 0) :last-id last-id
+       :nodes (rows db "SELECT id, class, data FROM nodes WHERE graph=? AND to_seq IS NULL AND from_seq > ?" graph s)
+       :removed (mapv first (rows db "SELECT DISTINCT id FROM nodes o WHERE graph=? AND to_seq > ?
+                                      AND NOT EXISTS (SELECT 1 FROM nodes c WHERE c.graph=o.graph AND c.id=o.id AND c.to_seq IS NULL)" graph s))
+       :edges (rows db "SELECT status, data FROM edges WHERE graph=? AND to_seq IS NULL AND from_seq > ?" graph s)
+       :removed-edges (rows db "SELECT DISTINCT \"from\", type, \"to\", status FROM edges o WHERE graph=? AND to_seq > ?
+                                AND NOT EXISTS (SELECT 1 FROM edges c WHERE c.graph=o.graph AND c.\"from\"=o.\"from\" AND c.type=o.type
+                                                AND c.\"to\"=o.\"to\" AND c.status=o.status AND c.to_seq IS NULL)" graph s)
+       :discarded (mapv first (rows db "SELECT key FROM discarded WHERE graph=? AND seq > ?" graph s))
+       :heads (value db "SELECT props FROM heads WHERE graph=?" graph)})))
+
 ;; --- vectors ------------------------------------------------------------------------
 
 (defn pending
