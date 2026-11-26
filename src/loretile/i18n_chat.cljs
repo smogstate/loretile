@@ -194,6 +194,8 @@
    :chat/action-create-graph {:ru "Создать граф «{title}» · {ontology}" :de "Graph „{title}“ anlegen · {ontology}" :en "Create the graph “{title}” · {ontology}"}
    :chat/action-open-graph {:ru "Открыть граф «{title}»" :de "Graph „{title}“ öffnen" :en "Open the graph “{title}”"}
    :chat/graph-opened {:ru "Открыт граф «{title}»." :de "Graph „{title}“ ist geöffnet." :en "The graph “{title}” is open."}
+   :chat/action-apply-changeset {:ru "Взять изменение «{title}»" :de "Änderung „{title}“ übernehmen" :en "Take up the changeset “{title}”"}
+   :chat/changeset-picked {:ru "Изменение «{title}»: читаю его против графа — новое, правки и удаления придут карточками." :de "Änderung „{title}“: ich lese sie gegen den Graphen — Neues, Korrekturen und Entfernungen kommen als Karten." :en "Changeset “{title}”: reading it against the graph — new things, edits and removals come as cards."}
    :chat/action-draft {:ru "Предложить упражнения по теме «{title}»" :de "Übungen zum Thema „{title}“ vorschlagen" :en "Draft exercises for “{title}”"}
    ;; --- the ontology interview (wiki/Profiles.md §CQ) ---
    :chat/mode-ontology {:ru "режим онтологии" :de "Ontologiemodus" :en "ontology mode"}

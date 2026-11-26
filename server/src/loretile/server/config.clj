@@ -32,6 +32,7 @@
    [[:llm :auth-header] :string "Authorization"]
    [[:llm :auth-prefix] :string "Bearer "]
    [[:merges :url] :string nil]
+   [[:changesets :token] :string nil]            ; Bearer token to POST /api/changesets; none: posting is off (wiki/Changesets.md)
    [[:graphs :url] :string nil]
    [[:graphs :projection] :string nil]          ; SQLite file; default: projection.sqlite3 in the graphs dir (file://) or the temp dir
    [[:aws :region] :string nil]

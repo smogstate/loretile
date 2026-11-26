@@ -833,6 +833,50 @@
      (for [o objects :when (not (ids (:concept o)))] {:card :object :data o})
      (for [q questions :when (not (ids (:concept q)))] {:card :question :data q}))))
 
+(defn- clip [s] (let [s (str s)] (if (> (count s) 160) (str (subs s 0 160) "…") s)))
+
+(defn- change-cards
+  "A changeset's `changes` and `removals` of EXISTING nodes (wiki/Changesets.md)
+   → the change cards merge files use: an edit, old → new; a removal
+   deprecates, never deletes. Unknown ids and no-op edits are dropped."
+  [kg {:keys [changes removals]}]
+  (concat
+   (for [{:keys [id why] :as ch} changes
+         :let [c (get-in kg [:concepts (str id)])
+               payload (into {} (for [k [:title :definition]
+                                      :let [v (some-> (get ch k) str str/trim)]
+                                      :when (and (seq v) (not= v (get c k)))]
+                                  [k v]))]
+         :when (and c (seq payload))]
+     {:card :change :ev (ops/edit (str id) payload :material)
+      :data {:id (str "chg-" id) :kind :edit :concept (str id) :title (:title c) :why why
+             :lines (vec (for [[k v] payload] [(name k) (clip (get c k)) (clip v)]))}})
+   (for [{:keys [id why]} removals
+         :let [c (get-in kg [:concepts (str id)])]
+         :when (and c (not= :deprecated (:status c)))]
+     {:card :change :ev (ops/deprecate-node (str id))
+      :data {:id (str "rm-" id) :kind :remove :concept (str id) :title (:title c) :why why}})))
+
+(defn- changeset-block
+  "For a changeset (wiki/Changesets.md): the existing nodes its text may touch,
+   with their words as they stand, and how to answer changes and removals.
+   Promise of the prompt text."
+  [kg material]
+  (p/let [ids (candidate-ids kg material)]
+    (str
+     ;; i18n-ignore — the changeset's framing for the model, not shown
+     "\n\nЭТО ИЗМЕНЕНИЕ: материал описывает, как всё стало теперь (реализованная история, спецификация, заметки)."
+     ;; i18n-ignore
+     " Существующие узлы, которых он может касаться, с их нынешними словами:\n"
+     (apply str (for [id (take 30 ids) :let [c (get-in kg [:concepts id])] :when c]
+                  (str "- " id " «" (:title c) "»: " (clip (:definition c)) "\n")))
+     ;; i18n-ignore
+     "Если материал МЕНЯЕТ существующий узел — не создавай новый: верни его в \"changes\": "
+     ;; i18n-ignore
+     "[{\"id\":\"id узла\",\"title\":\"новое название — только если меняется\",\"definition\":\"новое определение целиком\",\"why\":\"короткая цитата-основание\"}]."
+     ;; i18n-ignore
+     " Если узел больше не действует — верни его в \"removals\": [{\"id\":\"…\",\"why\":\"…\"}]. Новое — как обычно, в concepts.")))
+
 (defn- parse-reply
   "The model's JSON reply → a map. Fences, a leading newline or a line of
    prose around the JSON are tolerated. A reply with no JSON at all is an
@@ -875,12 +919,12 @@
 ;; 2026-10-15: the intake of a process map was told it could start a course)
 (defn- intake-reads []
   (if (profile/learnable? (store/profile))
-    #{"search-nodes" "open-node" "list-courses" "learner-gaps" "list-graphs"}
-    #{"search-nodes" "open-node" "check-cqs" "list-graphs"}))
+    #{"search-nodes" "open-node" "list-courses" "learner-gaps" "list-graphs" "list-changesets"}
+    #{"search-nodes" "open-node" "check-cqs" "list-graphs" "list-changesets"}))
 (defn- intake-acts []
   (if (profile/learnable? (store/profile))
-    #{"go-to-node" "start-course" "draft-exercises" "create-graph" "open-graph"}
-    #{"go-to-node" "create-graph" "open-graph"}))
+    #{"go-to-node" "start-course" "draft-exercises" "create-graph" "open-graph" "apply-changeset"}
+    #{"go-to-node" "create-graph" "open-graph" "apply-changeset"}))
 
 (defn- ask-with-tools!
   "An intake call in which the model may LOOK first (tools/converse!). The
@@ -1009,7 +1053,8 @@
    {:concepts :dropped :note}."
   [home d material prior step!]
   (p/let [summary (existing-summary (store/kg) material)
-          ops (ask-with-tools! (str (ops-instruction) (tools/prompt-block {:only (intake-reads) :acts (intake-acts)}) (content-language) (answer-language) (screen-context) "\n\n" summary
+          touched (when (:changeset? d) (changeset-block (store/kg) material))
+          ops (ask-with-tools! (str (ops-instruction) (tools/prompt-block {:only (intake-reads) :acts (intake-acts)}) (content-language) (answer-language) (screen-context) "\n\n" summary touched
                               (when (seq prior)
                                 ;; i18n-ignore
                                 (str "\nУже предложено из этого материала — эти узлы не повторяй; но если в этой части о них есть подробности"
@@ -1056,6 +1101,8 @@
                                (ops->cards
                                 (assoc ops :concepts (into ok-c waiting)
                                        :objects (map #(cond-> % src (assoc :source-id src)) (:objects ops))))))
+        ;; a changeset: what it changes or retires among the existing nodes
+        (when (:changeset? d) (swap! cards into (change-cards (store/kg) ops)))
         (step! :edges)
         ;; where each topic sits in the document's numbered headings («#### 3. …»):
         ;; the pair search reads step order from it, as it reads page marks.
@@ -2672,6 +2719,8 @@
      [:span.card-tag (str (t (case kind :edit :chat/change-tag :remove :chat/remove-tag :chat/other-tag))
                           (when change (t (if (= :material change) :chat/change-material :chat/change-patch))))]
      [:b title]
+     ;; a changeset says why (the sentence of the text that asks for it)
+     (when-let [w (not-empty (str (:why data)))] [:p.muted.chg-why "«" w "»"])
      (for [[i [k old new]] (map-indexed vector lines)]
        ^{:key i}
        [:p.chg-line (when (seq k) [:span.muted (str k ": ")])

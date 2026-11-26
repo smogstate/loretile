@@ -12,6 +12,9 @@
      GET  /api/graphs/<id>?after=n[&since=k][&format=json] → {:seq :events} after batch n (0: all); json: tagged like IndexedDB;
           since (an event count): + :rows, what the projection changed after it
      GET  /api/graphs/<id>/rows → every current row as one JSON string (the browser builds its graph from it)
+     GET  /api/graphs/<id>/changesets → the graph's pending changesets [{:id :title :source}] (wiki/Changesets.md)
+     POST /api/changesets (markdown, front matter `graph:` mandatory; Bearer [:changesets :token]) → 201 {:id :graph :title}
+     GET  /api/changesets/<id> → {:id :graph :title :source :text}
      GET  /api/graphs/<id>/view?course=&pin= | ?valid=&recorded= → the graph folded from a filtered log
           (a pinned learner's, the past view) in /rows' shape, + cut, newest, changes
      POST /api/graphs/<id>/events → judge + store {:events [...] :after n};
@@ -196,6 +199,7 @@
                                                                   (#{"verbatim" "semantic" "hybrid"} (query-param ex "mode")))))
       "changes" (send-json! ex 200 (json/write-str (graphs/changes-since gid (n "since" 0))))
       "rows" (send-json! ex 200 (graphs/rows-json gid))
+      "changesets" (send-edn! ex 200 (graphs/pending-changesets gid))
       "view" (send-json! ex 200 (graphs/view gid (cond-> {}
                                                     (query-param ex "course") (assoc :course (query-param ex "course"))
                                                     (query-param ex "pin") (assoc :pin (query-param ex "pin"))
@@ -208,7 +212,7 @@
 (defn- graphs-api! [^HttpExchange ex]
   (let [method (.getRequestMethod ex)
         rel (subs (.getPath (.getRequestURI ex)) (count "/api/graphs"))
-        [_ gid tail node-id] (re-matches #"/?([^/]*)(?:/(events|structure|search|changes|rows|view|nodes/(.+?)))?/?" rel)
+        [_ gid tail node-id] (re-matches #"/?([^/]*)(?:/(events|structure|search|changes|changesets|rows|view|nodes/(.+?)))?/?" rel)
         tail (if node-id "nodes" tail)]
     (cond
       (not (graphs/configured?)) (send-text! ex 404 "graphs url is not configured")
@@ -234,6 +238,33 @@
 
 ;; --- routes ---------------------------------------------------------------------------
 
+(defn- changesets-api!
+  "wiki/Changesets.md: POST /api/changesets (markdown, the graph's id in its
+   front matter; the server's [:changesets :token] as a Bearer) → 201 {:id
+   :graph :title}; GET /api/changesets/<id> → {:id :graph :title :source :text}."
+  [^HttpExchange ex]
+  (let [method (.getRequestMethod ex)
+        id (second (re-matches #"/api/changesets/?(.*)" (.getPath (.getRequestURI ex))))
+        token (config/get-in-config [:changesets :token])
+        given (some-> (.getFirst (.getRequestHeaders ex) "Authorization") (str/replace #"^Bearer\s+" ""))]
+    (cond
+      (not (graphs/configured?)) (send-text! ex 404 "graphs url is not configured")
+      (and (= "POST" method) (str/blank? id))
+      (cond
+        (str/blank? token) (send-text! ex 404 "changesets are off: no [:changesets :token] configured")
+        (not (and given (java.security.MessageDigest/isEqual (.getBytes ^String token StandardCharsets/UTF_8)
+                                                            (.getBytes ^String given StandardCharsets/UTF_8))))
+        (send-text! ex 401 "a changeset needs the server's token: Authorization: Bearer …")
+        :else
+        (let [bytes (.readNBytes (.getRequestBody ex) (inc graphs/changeset-max))
+              r (graphs/post-changeset! (String. bytes StandardCharsets/UTF_8))]
+          (if (:error r)
+            (send-edn! ex (:status r) {:error (:error r)})
+            (send-edn! ex 201 r))))
+      (and (= "GET" method) (seq id))
+      (if-let [c (graphs/changeset id)] (send-edn! ex 200 c) (send-text! ex 404 "no such changeset"))
+      :else (send-text! ex 405 "Method not allowed"))))
+
 (defn- route! [^HttpExchange ex]
   (let [path (.getPath (.getRequestURI ex))]
     (cond
@@ -241,6 +272,7 @@
       (= path "/api/llm") (proxy! ex :url)
       (= path "/api/embed") (proxy! ex :embed-url)
       (str/starts-with? path "/api/merges/") (merges! ex)
+      (or (= path "/api/changesets") (str/starts-with? path "/api/changesets/")) (changesets-api! ex)
       (or (= path "/api/graphs") (str/starts-with? path "/api/graphs/")) (graphs-api! ex)
       (str/starts-with? path "/api/") (send-text! ex 404 "Not found")
       :else (serve-file! ex))))

@@ -19,6 +19,7 @@
             [loretile.llm :as llm]
             [loretile.profile :as profile]
             [loretile.merge :as mrg]
+            [loretile.changesets :as cs]
             [loretile.store :as store]
             [loretile.sync :as sync]
             [loretile.tour :as tour]))
@@ -972,7 +973,7 @@
        [:text.node-label {:y (+ R 16) :opacity 0.75} (:title prop)]
        [:text.node-sub {:y (+ R 30)} (t :ui/ghost-hint)]])))
 
-(declare rail fullscreen-btn legend-btn layout-btn demos demos-on? pick-demo! merge-badge asof-btn color-scheme node-words edge-label edge-open filter-btn prop-filter)
+(declare rail fullscreen-btn legend-btn layout-btn demos demos-on? pick-demo! merge-badge changeset-badge asof-btn color-scheme node-words edge-label edge-open filter-btn prop-filter)
 
 (defn- mount-map!
   "Size the sim to the svg, seed the viewport once, bind the wheel once.
@@ -1002,7 +1003,7 @@
       ;; the map's colour scheme is a graph property (Denis 2026-11-19); a
       ;; graph describing types defaults to the blueprint look
       [:div.map-wrap {:class (str "scheme-" (color-scheme kg))}
-       [:div.map-tools [legend-btn] [layout-btn] [fullscreen-btn] [asof-btn] [filter-btn] [merge-badge]]
+       [:div.map-tools [legend-btn] [layout-btn] [fullscreen-btn] [asof-btn] [filter-btn] [merge-badge] [changeset-badge]]
        ;; backend mode: the graph's seed is on its way from the server
        (when (store/loading?) [:div.hood-note.graph-loading (t :ui/server-graphs-loading)])
        ;; a big graph says what part of it the map shows, and how to move
@@ -2629,6 +2630,15 @@
       [:button.merge-badge.nav-merges {:title (t :ui/merges) :on-click #(reset! drawer-open true)}
        [icons/icon :inbox] (t :ui/merge-badge {"{n}" n})])))
 
+(defn- changeset-badge
+  "Changesets waiting for the open graph (wiki/Changesets.md): a count on the
+   map, the list in the drawer. Absent when nothing waits."
+  []
+  (let [n (count @cs/pending)]
+    (when (pos? n)
+      [:button.changeset-badge.nav-changesets {:title (t :ui/changesets) :on-click #(reset! drawer-open true)}
+       [icons/icon :inbox] (t :ui/changeset-badge {"{n}" n})])))
+
 (defn- legend-btn
   "What the colours and glyphs mean, one tap away — it lived only in the
    tour (UX review 2026-10-02 #11). Reuses the tour's legend text."
@@ -3202,6 +3212,15 @@
               [:a.merge-row {:role "button" :tab-index 0
                              :on-click (fn [] (close!) (mrg/pick! k) (goto! "#/chat"))}
                [icons/icon :inbox] (mrg/title-of k)])])
+         ;; changesets the server holds for the open graph (wiki/Changesets.md)
+         (when-let [css (seq @cs/pending)]
+           [:<>
+            [:div.dsec (t :ui/changesets)]
+            (for [{:keys [id title]} css]
+              ^{:key id}
+              [:a.changeset-row {:role "button" :tab-index 0
+                                 :on-click (fn [] (close!) (cs/pick! id) (goto! "#/chat"))}
+               [icons/icon :inbox] title])])
          [:a {:role "button" :tab-index 0 :on-click #(go "#/chat")} [icons/icon :chat] (t :ui/assistant)]
          (when (profile/learnable? (store/profile))
            [:a {:role "button" :tab-index 0 :on-click #(go "#/course/new")} [icons/icon :notes] (t :ui/new-course)])

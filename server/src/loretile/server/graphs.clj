@@ -234,6 +234,100 @@
                :let [g (locking (lock-of gid) (loaded st gid))]]
            (assoc (:meta g) :seq (:seq g))))))
 
+;; --- changesets (wiki/Changesets.md) ---------------------------------------------
+;; TEXT that changes a graph, posted by CI or a tool with the graph's id in its
+;; front matter; stored with the graphs under `.changesets/` (the dot keeps it
+;; apart from graph ids). Pending = not yet a source `changeset:<id>` in its
+;; graph — picking one up registers that source.
+
+(def changeset-max (* 200 1024))
+
+(defn- unquote-value [v]
+  (let [v (str/trim v)]
+    (if-let [[_ q] (or (re-matches #"\"(.*)\"" v) (re-matches #"'(.*)'" v))]
+      q
+      (str/trim (str/replace v #"\s+#.*$" "")))))   ; a YAML comment, unless quoted
+
+(defn front-matter
+  "Markdown opening with a `---` front matter → [{:field value} body], or nil."
+  [text]
+  (when-let [[_ head body] (re-matches #"(?s)\A\uFEFF?---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n(.*))?\z" (str text))]
+    [(into {} (keep (fn [line] (when-let [[_ k v] (re-matches #"\s*([A-Za-z][A-Za-z0-9_-]*)\s*:(.*)" line)]
+                                 (let [v (unquote-value v)] (when (seq v) [(keyword (str/lower-case k)) v])))))
+           (str/split-lines head))
+     (or body "")]))
+
+(defn- cs-file [dir id] (io/file dir ".changesets" (str id ".md")))
+(defn- cs-key [key id] (s3/join-key key (str ".changesets/" id ".md")))
+
+(defn- cs-text [{:keys [kind dir bucket key aws]} id]
+  (case kind
+    :file (let [f (cs-file dir id)] (when (.isFile f) (slurp f :encoding "UTF-8")))
+    :s3 (try (String. ^bytes (:bytes (s3/get-object aws bucket (cs-key key id) nil)) StandardCharsets/UTF_8)
+             (catch Exception _ nil))))
+
+(defn- cs-ids [{:keys [kind dir bucket key aws]}]
+  (keep #(second (re-matches #"(.+)\.md" %))
+        (case kind
+          :file (some->> (.listFiles (io/file dir ".changesets")) (map #(.getName ^File %)))
+          :s3 (map #(last (str/split % #"/")) (s3/list-keys aws bucket (s3/join-key key ".changesets/"))))))
+
+(defn- cs-header [id text]
+  (let [[fm body] (front-matter text)]
+    {:id id :graph (:graph fm) :source (:source fm)
+     :title (or (:title fm) (some->> (re-find #"(?m)^#{1,3}\s+(.+)$" body) second str/trim) id)}))
+
+(defonce ^:private cs-headers (atom nil))   ; id → header, read once per process, kept by `post-changeset!`
+
+(defn- headers [st]
+  (or @cs-headers
+      (reset! cs-headers (into {} (keep (fn [id] (some->> (cs-text st id) (cs-header id) (vector id)))) (cs-ids st)))))
+
+(defn post-changeset!
+  "Store a changeset (markdown text): {:id :graph :title} or {:error … :status n}
+   — no front matter or no `graph` (400), a graph the server does not hold (400),
+   a bad or taken id (400 / 409), too big (413)."
+  [text]
+  (let [st (store)
+        [fm _] (front-matter text)
+        gid (:graph fm)
+        id (or (:id fm) (str "cs-" (Long/toString (System/currentTimeMillis) 36)))]
+    (cond
+      (> (count (.getBytes ^String text StandardCharsets/UTF_8)) changeset-max) {:status 413 :error "a changeset is at most 200 KB"}
+      (nil? fm) {:status 400 :error "a changeset opens with a --- front matter naming its graph"}
+      (nil? gid) {:status 400 :error "the front matter must name the graph: graph: <id>"}
+      (not (some #{gid} (graph-ids st))) {:status 400 :error (str "no graph " gid " on this server")}
+      (not (valid-id? id)) {:status 400 :error (str "bad changeset id: " id)}
+      (contains? (headers st) id) {:status 409 :error (str "changeset " id " exists")}
+      :else
+      (do (case (:kind st)
+            :file (let [f (cs-file (:dir st) id) tmp (io/file (:dir st) ".changesets" (str "." id ".tmp"))]
+                    (io/make-parents f)
+                    (spit tmp text :encoding "UTF-8")
+                    (when-not (.renameTo tmp f) (throw (ex-info (str "could not store changeset " id) {}))))
+            :s3 (s3/put-object! (:aws st) (:bucket st) (cs-key (:key st) id) (.getBytes ^String text StandardCharsets/UTF_8)
+                                "text/markdown; charset=utf-8"))
+          (let [h (cs-header id text)]
+            (swap! cs-headers assoc id h)
+            (select-keys h [:id :graph :title]))))))
+
+(defn pending-changesets
+  "The changesets of graph `gid` not yet applied (no source `changeset:<id>`
+   in it): [{:id :title :source}], in id order."
+  [gid]
+  (let [st (store)
+        mine (sort-by :id (filter #(= gid (:graph %)) (vals (headers st))))]
+    (read-graph gid (fn [db _]
+                      (vec (for [h mine :when (nil? (proj/node db gid (str "changeset:" (:id h))))]
+                             (select-keys h [:id :title :source])))))))
+
+(defn changeset
+  "One changeset: {:id :graph :title :source :text} (the text without its front matter), or nil."
+  [id]
+  (when (valid-id? id)
+    (when-let [text (cs-text (store) id)]
+      (assoc (cs-header id text) :text (second (front-matter text))))))
+
 (defn events-after
   "{:seq :events} — every event stored after batch `after` (0: the whole
    graph); with `since` (an event count) also :rows, what changed in the

@@ -37,6 +37,7 @@ Learning platform: knowledge graph of small learning objects, per-learner master
 | Reader marks | `wiki/Code.md#reader-marks` | — | marks |
 | Token budget, key onboarding | `wiki/Code.md#token-budget` | `wiki/Ethics.md` | budget |
 | The graph as it stood: a bitemporal cut over the log (`:ev/ts` made, `:ev/recorded` taken in), a clock on the map, editing absent in the past | `wiki/Code.md#the-graph-as-it-stood` | `wiki/Data-Model.md` § Bitemporal | asof, fold_test `the-graph-as-it-stood` |
+| Changesets: TEXT that changes a graph, posted to the server with its graph id in the header (`POST /api/changesets`, Bearer token); the graph's pending ones in a badge and the drawer; picked — the assistant reads it against the graph: new topics, edits and removals of existing ones as cards; applied = a source `changeset:<id>` | `wiki/Code.md#changesets` | `wiki/Changesets.md` | changeset (+ sync, tools, intake) |
 | Merge files: a log of events on S3 under `merges/{graph-id}/`, reviewed as cards with the changes on the map | `wiki/Code.md#merge-files` | — | merge |
 | Re-upload card (sorted by quote) · staleness on material | `wiki/Code.md#re-upload-card` | `wiki/Decisions-2026-10-02.md` #7 · `wiki/Profiles.md` § Where the graph wins | reupload, version, fold_test `staleness-lives-on-material` `a-new-version-flags-only-what-changed` |
 | i18n · locale of new content | `wiki/Code.md#i18n` | `wiki/Decisions-2026-10-02.md` #12 | i18n (in `make test`), lang, locale |

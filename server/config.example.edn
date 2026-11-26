@@ -30,6 +30,9 @@
 
  ;; merge files: merges/{graph-id}/*.edn under this bucket and prefix
  :merges {:url "s3://loretile-merges"}
+ ;; changesets (wiki/Changesets.md): text that changes a graph, POSTed to
+ ;; /api/changesets with this token as a Bearer; absent → posting is off
+ ;; :changesets {:token "…"}                     ; env: CHANGESETS_TOKEN
 
  ;; graphs kept by the server (local-first: browsers sync their event logs
  ;; here): {graph-id}/{seq}.edn — one object per stored batch. A directory

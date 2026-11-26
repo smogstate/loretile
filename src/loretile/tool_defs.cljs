@@ -5,6 +5,7 @@
    graph's own content in its own language. Loaded at boot by core."
   (:require [clojure.string :as str]
             [loretile.chat :as chat]
+            [loretile.changesets :as cs]
             [loretile.exercise :as ex]
             [loretile.fold :as fold]
             [loretile.graph-local :as graph-local]
@@ -147,6 +148,21 @@
                      "none")))
             (p/catch (fn [_] (str here "\n\nthe server did not answer")))))))})
 
+(tools/register!
+ {:name "list-changesets" :confirm :auto
+  :args {}
+  ;; i18n-ignore
+  :doc "изменения (changesets), которые сервер держит для этого графа и которые ещё не применены: id, название, откуда"
+  :handler (fn [{:keys [graph-id]} _]
+             (if-not sync/enabled?
+               "no server here: changesets come only through a Loretile server"
+               (-> (p/let [rows (sync/changesets (or graph-id @store/current))]
+                     (reset! cs/pending (vec rows))
+                     (if (seq rows)
+                       (str/join "\n" (for [{:keys [id title source]} rows] (str id " — «" title "»" (when source (str " (" source ")")))))
+                       "no pending changesets for this graph"))
+                   (p/catch (fn [_] "the server did not answer")))))})
+
 ;; --- actions: one-tap cards, never run by the model (:action) ----------------
 
 (defn- ontology-choice
@@ -201,6 +217,16 @@
            (if (store/graph-on-device? id)
              (opened! (when (store/switch-graph! id) id))
              (when-let [g (get @server-listed id)] (p/then (sync/open-server-graph! g) opened!)))))})
+
+(tools/register!
+ {:name "apply-changeset" :confirm :action
+  :args {:id "changeset id from list-changesets"}
+  ;; i18n-ignore
+  :doc "взять изменение (changeset) в работу: его текст прочитаю против графа и предложу карточки — новые узлы, связи, правки и удаления существующих"
+  :label (fn [_ {:keys [id]}]
+           (when-let [{:keys [title]} (some #(when (= (str id) (:id %)) %) @cs/pending)]
+             (t :chat/action-apply-changeset {"{title}" title})))
+  :run (fn [_ {:keys [id]}] (cs/pick! (str id)))})
 
 (tools/register!
  {:name "go-to-node" :confirm :action

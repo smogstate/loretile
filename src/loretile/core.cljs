@@ -4,6 +4,7 @@
             [loretile.chat :as chat]
             [loretile.graph-local :as graph-local]
             [loretile.merge :as mrg]
+            [loretile.changesets :as cs]
             [loretile.store :as store]
             [loretile.sync :as sync]
             [loretile.tool-defs]                ; registers the assistant's read tools
@@ -35,6 +36,7 @@
   (vectors/load!)
   (chat/restore!)
   (mrg/refresh!)                    ; merge files waiting for the open graph
+  (cs/refresh!)                     ; changesets the server holds for it (wiki/Changesets.md)
   (ui/apply-theme!)
   (store/watch-other-tabs!)
   (set! (.-lang js/document.documentElement) (name @i18n/locale))

@@ -157,6 +157,20 @@
                   (p/catch (fn [e] (swap! view-asked disj k) (js/console.warn "loretile: a view failed:" (ex-message e))))))
             nil))))
 
+;; --- changesets (wiki/Changesets.md): text that changes a graph, held by the server
+
+(defn changesets
+  "Promise of graph `gid`'s pending changesets: [{:id :title :source}]."
+  [gid]
+  (api-get (str "/" (js/encodeURIComponent gid) "/changesets")))
+
+(defn changeset
+  "Promise of one changeset: {:id :graph :title :source :text}."
+  [id]
+  (-> (js/fetch (str "api/changesets/" (js/encodeURIComponent id)))
+      (p/then (fn [^js r] (if (.-ok r) (.text r) (p/rejected (ex-info (str "HTTP " (.-status r)) {:status (.-status r)})))))
+      (p/then reader/read-string)))
+
 (defn open-server-graph!
   "Bring a server graph onto this device and open it: its seed (the
    server's rows) — no log is fetched or kept here. Promise of the id."

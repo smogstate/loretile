@@ -779,6 +779,8 @@
    ;; merge files (loretile.merge)
    :ui/merges {:ru "Слияния" :de "Zusammenführungen" :en "Merges"}
    :ui/merge-badge {:ru "К слиянию: {n}" :de "Zusammenführen: {n}" :en "To merge: {n}"}
+   :ui/changesets {:ru "Изменения" :de "Änderungen" :en "Changesets"}
+   :ui/changeset-badge {:ru "Изменений: {n}" :de "Änderungen: {n}" :en "Changesets: {n}"}
    :ui/merges-lead {:ru "Адрес бакета S3 с файлами изменений. Файлы для графа лежат в merges/{id графа}/ и ждут в меню, пока не слиты; слитый файл становится источником графа."
                     :de "Adresse des S3-Buckets mit Änderungsdateien. Dateien für einen Graphen liegen unter merges/{Graph-ID}/ und warten im Menü, bis sie zusammengeführt sind; eine zusammengeführte Datei wird zur Quelle des Graphen."
                     :en "Address of the S3 bucket with change files. Files for a graph live under merges/{graph id}/ and wait in the menu until merged; a merged file becomes a source of the graph."}
