@@ -9,4 +9,5 @@
         funcool/promesa {:mvn/version "11.0.678"}
         org.clojure/data.json {:mvn/version "2.5.2"}
         org.xerial/sqlite-jdbc {:mvn/version "3.54.1.0"}}
- :aliases {:test {:extra-paths ["test"] :jvm-opts ["--enable-native-access=ALL-UNNAMED"] :main-opts ["-m" "loretile.server.projection-test"]}}}
+ :aliases {:genesis {:jvm-opts ["--enable-native-access=ALL-UNNAMED" "-Xmx4g"] :main-opts ["-m" "loretile.server.genesis"]}
+           :test {:extra-paths ["test"] :jvm-opts ["--enable-native-access=ALL-UNNAMED"] :main-opts ["-m" "loretile.server.projection-test"]}}}

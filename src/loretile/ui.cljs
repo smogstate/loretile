@@ -666,7 +666,11 @@
 (defn- orbit-chip
   "Kintale orbit chip: a small round button on the selected node's rim."
   [cls ang title on-click body]
-  (let [a (* (/ js/Math.PI 180) ang) d (+ R 16)]
+  ;; far enough that the 44 px target clears the node (d − 22 > R): at R+16 it
+  ;; covered the node's own rim, and a second tap to open a selected topic
+  ;; armed its removal — «a course teaches this topic» on a course target, a
+  ;; silent 6 s countdown on any other (2026-11-27)
+  (let [a (* (/ js/Math.PI 180) ang) d (+ R 24)]
     [:g {:class (str "orbit " cls)
          :transform (str "translate(" (* d (js/Math.cos a)) "," (* d (js/Math.sin a)) ")")
          ;; the node under the chip must not start a drag or a select

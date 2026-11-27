@@ -65,6 +65,11 @@ async function open() {
     try { pool = await sqlite3.installOpfsSAHPoolVfs({ name: 'loretile' }); break; }
     catch (e) { if (i >= 100) throw e; await new Promise((r) => setTimeout(r, 100)); }
   }
+  // A reopened pool's capacity is the slot files it finds; the default six are
+  // made only when it finds none. A reload during the very first creation left
+  // fewer, never topped up — the journal then had no slot: «SAH pool is full»
+  // (a fresh profile's load-then-reload, the release smoke on CI, 2026-11-26).
+  await pool.reserveMinimumCapacity(6);
   db = new pool.OpfsSAHPoolDb(DB);
   db.exec(SCHEMA);
   prep();

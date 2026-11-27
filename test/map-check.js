@@ -58,6 +58,27 @@ const check = (ok, name) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name); 
   await page.type('.cmd-input', 'HAVING: фильтр'); await sleep(250); await page.keyboard.press('Enter'); await sleep(900);
   check(await inView('HAVING: фильтр по группам'), 'opened from search, the map brings it into view beside its panel');
 
+  // a SELECTED topic's orbit chips (link, delete) must not cover the topic: a tap
+  // inside its circle near a chip opened… a removal (2026-11-27: «a course teaches
+  // this topic» on a course target, a silent 6 s countdown on any other)
+  await page.goto(BASE + '#/', { waitUntil: 'networkidle0' }); await sleep(600);
+  const target = await page.evaluate(() => { const kg = loretile.store.kg(); const c = cljs.core.first(cljs.core.vals(cljs.core.get(kg, cljs.core.keyword('courses'))));
+    return cljs.core.first(cljs.core.first(cljs.core.get(c, cljs.core.keyword('targets')))); });
+  await page.evaluate((id) => cljs.core.reset_BANG_(loretile.ui.graph_sel, id), target); await sleep(500);
+  const hits = await page.evaluate(() => {
+    const g = document.querySelector('.orbit-del').closest('.node');
+    const r = g.querySelector('circle.node-body').getBoundingClientRect();
+    const [x, y, rad] = [r.x + r.width / 2, r.y + r.height / 2, r.width / 2];
+    // inside the circle (0.85 of its radius) toward each chip, and a ring of points on its rim
+    const points = [[0.85, 35], [0.85, -35], ...Array.from({ length: 12 }, (_, i) => [0.95, i * 30])];
+    return points.map(([k, deg]) => { const a = deg * Math.PI / 180; const e = document.elementFromPoint(x + k * rad * Math.cos(a), y + k * rad * Math.sin(a));
+      return e && e.closest('.orbit') ? deg : null; }).filter((d) => d !== null);
+  });
+  check(hits.length === 0, `inside a selected topic, every point is the topic — no orbit chip covers it (${hits.length ? 'chips at ' + hits.join(', ') + '°' : 'none'})`);
+  const chips = await page.evaluate(() => ['.orbit-del', '.orbit-link'].map((s) => { const r = document.querySelector(s + ' circle:not(.orbit-hit)').getBoundingClientRect();
+    const e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!(e && e.closest(s)); }));
+  check(chips.every(Boolean), 'and each chip still answers where it is drawn');
+
   await browser.close();
   console.log(failures ? 'MAP CHECK FAILED' : 'MAP CHECK OK');
   process.exit(failures ? 1 : 0);

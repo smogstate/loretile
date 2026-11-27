@@ -10,6 +10,7 @@
             [loretile.fold :as fold]
             [loretile.graph-store :as gs]
             [loretile.graph-rows :as rows]
+            [loretile.server.genesis :as genesis]
             [loretile.server.projection :as proj])
   (:import (java.io File PushbackReader)))
 
@@ -114,6 +115,71 @@
         (is (= (comparable whole) (comparable (fold/apply-delta at (rows/rows->delta at r))))
             (str path " from event " n))
         (is (= (count evs) (:head r)) path)))))
+
+;; a graph that exists only as a projection gets a GENESIS log (genesis.clj):
+;; read back from the file, its events replayed through the guard must fold to
+;; the database's graph — with the authors and times the fold stamps, or without
+(deftest a-projection-gets-a-genesis-log-that-folds-to-it
+  (let [f (File/createTempFile "genesis-test" ".sqlite3")
+        _ (.deleteOnExit f)
+        db (proj/open (.getPath f))]
+    (doseq [path logs :let [evs (read-log path) g (str "g" (Math/abs (hash path)))]]
+      (proj/rebuild! db g evs)
+      (let [kg (genesis/read-graph (.getPath f) g)]
+        (is (= (comparable (fold/kg evs)) (comparable kg)) (str path ": the file reads back as the fold"))
+        (doseq [authorship? [true false]
+                :let [{:keys [events warnings]} (genesis/kg->events kg {:graph g :authorship? authorship?})
+                      proof (genesis/verify kg events {:authorship? authorship?})]]
+          (when-not (:ok? proof) (println "  " path "authorship" authorship? (pr-str (dissoc proof :ok?)) (pr-str warnings)))
+          (is (:ok? proof) (str path (when-not authorship? " (no authorship)"))))))))
+
+;; …and what the kg/ logs hardly have: two authors (one adds, the other edits),
+;; versions, staleness from a source's material update, discarded proposals and
+;; edges, proposals kept, material and items
+(deftest a-genesis-log-keeps-versions-staleness-discards-and-authors
+  (let [n (atom 1000)
+        ev (fn [actor ops & [edit]] (cond-> {:ev/id (str "s" (swap! n inc)) :ev/ns "scn" :ev/actor actor :ev/ts (swap! n inc)
+                                            :ev/type :change :ops ops} edit (assoc :edit edit)))
+        evs [(ev "a1" [[:graph-set {:title "Сценарий"}]])
+             (ev "a1" [[:graph-set {:authors {"a1" "Анна"}}]])
+             (ev "a2" [[:graph-set {:authors {"a2" "Борис"}}]])
+             (ev "a1" [[:node-set "s1" {:title "Регламент" :is :source}]])
+             (ev "a1" [[:node-set "c1" {:title "Окно возврата" :definition "14 дней." :source-id "s1"}]])
+             (ev "a2" [[:node-set "c2" {:title "Автовозврат" :definition "До 5000."}]])
+             (ev "a2" [[:edge-set "c2" :requires "c1" {}]])
+             (ev "a1" [[:node-set "o1" {:concept-id "c1" :kind :explanation :level :novice :locale "ru" :origin :authored :text "Объяснение." :grounded-in "s1" :is :object}]])
+             (ev "a2" [[:node-set "o2" {:concept-id "c2" :kind :explanation :level :novice :locale "ru" :origin :authored :text "Другое." :is :object}]])
+             (ev "a1" [[:node-set "i1" {:primary-concept-id "c1" :level :novice :kind :single-choice :locale "ru" :origin :authored
+                                         :spec {:stem "Сколько дней?" :options ["14" "30"] :key 0} :status :active :is :item}]])
+             (ev "a1" [[:node-set "c1" {:definition "Четырнадцать дней."}]] :patch)
+             (ev "a1" [[:node-set "o1" {:text "Объяснение, новое."}]] :material)
+             (ev "a1" [[:node-set "s1" {:updated {:change :material}}]])
+             (ev "a1" [[:node-set "p1" {:title "Лишнее" :status :proposed}]])
+             (ev "a1" [[:node-remove "p1"]])
+             (ev "a2" [[:node-set "p2" {:title "Предложено" :status :proposed}]])
+             (ev "a2" [[:edge-set "c1" :see-also "c2" {:status :proposed}]])
+             (ev "a2" [[:edge-set "c2" :is-confused-with "c1" {:status :proposed}]])
+             (ev "a2" [[:edge-remove "c2" :is-confused-with "c1"]])
+             (ev "a1" [[:node-set "c2" {:definition "До 5000 рублей."}]])]
+        {base :kg bad :bad err :error} (fold/replay fold/empty-kg evs)]
+    (is (nil? bad) (str "the scenario itself is a log the guard accepts: " (pr-str err)))
+    (when-not bad
+      (let [f (File/createTempFile "genesis-scn" ".sqlite3") _ (.deleteOnExit f)
+            db (proj/open (.getPath f))
+            _ (proj/rebuild! db "scn" evs)
+            kg (genesis/read-graph (.getPath f) "scn")]
+        (testing "the scenario has what it is for"
+          (is (= 2 (get-in kg [:concepts "c1" :version])))
+          (is (true? (get-in kg [:concepts "c1" :stale?])))
+          (is (true? (get-in kg [:objects "o1" :stale?])))
+          (is (= ["a2" "a1"] [(get-in kg [:concepts "c2" :added-by]) (get-in kg [:concepts "c2" :changed-by])]))
+          (is (contains? (:discarded kg) "p1"))
+          (is (some vector? (:discarded kg))))
+        (doseq [authorship? [true false]
+                :let [{:keys [events warnings]} (genesis/kg->events kg {:graph "scn" :authorship? authorship?})
+                      proof (genesis/verify kg events {:authorship? authorship?})]]
+          (when-not (:ok? proof) (println "   scenario authorship" authorship? (pr-str (dissoc proof :ok?)) (pr-str warnings)))
+          (is (:ok? proof) (str "the scenario" (when-not authorship? " (no authorship)"))))))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'loretile.server.projection-test)]
